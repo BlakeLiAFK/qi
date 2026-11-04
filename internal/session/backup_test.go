@@ -281,3 +281,69 @@ func TestBackupInvalidDatabaseCleansOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestBackupCheckViolationRejectedWithoutChangingSource(t *testing.T) {
+	for _, verify := range []bool{false, true} {
+		t.Run(map[bool]string{false: "backup", true: "verify-original-backup"}[verify], func(t *testing.T) {
+			s, source := openTest(t)
+			if _, err := s.db.Exec(`CREATE TABLE SECRET_CHECK_NAME(value INTEGER CHECK(value>0)); PRAGMA ignore_check_constraints=ON; INSERT INTO SECRET_CHECK_NAME VALUES(-1); PRAGMA ignore_check_constraints=OFF`); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(source, 0400); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := testutil.PrivateDir(t)
+			if verify {
+				_, err = VerifyBackup(context.Background(), source, dir)
+			} else {
+				err = BackupDatabase(context.Background(), source, filepath.Join(dir, "output.db"))
+			}
+			if err == nil || !strings.Contains(err.Error(), "integrity check failed") {
+				t.Fatal("CHECK violation passed verification", err)
+			}
+			if strings.Contains(err.Error(), "SECRET_CHECK_NAME") {
+				t.Fatal("raw check diagnostic leaked")
+			}
+			after, err := os.ReadFile(source)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("original source/backup changed", err)
+			}
+			info, err := os.Stat(source)
+			if err != nil || info.Mode().Perm() != 0400 {
+				t.Fatal("source permissions changed", err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 0 {
+				t.Fatal("invalid copy published or leaked", entries, err)
+			}
+		})
+	}
+}
+func TestBackupCopyValidationConnectionRejectsWrites(t *testing.T) {
+	_, path := openTest(t)
+	// This test-owned fixture stands in for the command's newly created copy.
+	db, err := openBackupCopyForCheck(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, pragma := range []struct {
+		name string
+		want int
+	}{{"query_only", 1}, {"trusted_schema", 0}} {
+		var got int
+		if err = db.QueryRow("PRAGMA " + pragma.name).Scan(&got); err != nil || got != pragma.want {
+			t.Fatal(pragma, got, err)
+		}
+	}
+	if _, err = db.Exec("CREATE TABLE must_not_exist(value TEXT)"); err == nil {
+		t.Fatal("validation connection allowed writes")
+	}
+}

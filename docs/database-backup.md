@@ -57,11 +57,25 @@ staging directory while another backup may be using it.
 ## Verification is not a production restore
 
 `backup-verify` reconstructs a database through SQLite's online backup API in a
-new disposable directory under `-work-dir`, then opens it read-only and checks
-integrity, foreign keys and counts of recognized tables. Its JSON output contains
+new disposable directory under `-work-dir`, then checks integrity, foreign keys
+and counts of recognized tables on that disposable copy. Its JSON output contains
 counts only, not record payloads. Missing optional tables are omitted for older
 schemas; core conversation tables are required. No migrations are performed.
 The disposable database is removed afterward; cleanup failures are returned.
+
+Both `backup` (before publication) and `backup-verify` validate only their newly
+constructed private copies using `mode=rw`, `query_only=ON`, `trusted_schema=OFF`.
+The original source database or original backup is always opened `mode=ro`.
+No application initialization, migrations or logical writes run on the validation
+connection. This distinction matters: the pinned SQLite implementation omits
+parsed CHECK expressions for read-only databases, so read-only integrity_check
+can miss CHECK violations. The copy's non-read-only B-tree retains those
+expressions while query_only prevents logical writes. A failing copy is removed,
+not published. Earlier read-only verification did not establish CHECK validity;
+recheck older snapshots with this copy-based validation when that assurance is
+needed. SQLite integrity/FK checks still do not establish application-version
+compatibility or validate every application-level invariant.
+
 
 The automated restore test additionally opens a restored fixture through the
 application store and compares task state/history, approvals, curated memory and

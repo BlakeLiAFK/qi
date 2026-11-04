@@ -114,7 +114,7 @@ func backupDatabase(ctx context.Context, source, destination string, afterSnapsh
 	if err != nil {
 		return fmt.Errorf("SQLite backup: %w", err)
 	}
-	if _, err = inspectBackup(ctx, temp); err != nil {
+	if _, err = inspectBackupCopy(ctx, temp); err != nil {
 		return err
 	}
 	f, err = os.OpenFile(temp, os.O_RDWR, 0)
@@ -215,11 +215,15 @@ func VerifyBackup(ctx context.Context, source, workDir string) (report BackupRep
 	if err = BackupDatabase(ctx, source, restored); err != nil {
 		return BackupReport{}, err
 	}
-	return inspectBackup(ctx, restored)
+	return inspectBackupCopy(ctx, restored)
 }
 
-func inspectBackup(ctx context.Context, path string) (BackupReport, error) {
-	db, err := openBackupSource(ctx, path)
+// inspectBackupCopy is only for a freshly constructed private staging or
+// disposable restore copy, never a caller's source or original backup. SQLite
+// omits parsed CHECK expressions on mode=ro connections. Open this owned copy
+// with mode=rw (no creation), but prohibit logical writes with query_only.
+func inspectBackupCopy(ctx context.Context, path string) (BackupReport, error) {
+	db, err := openBackupCopyForCheck(ctx, path)
 	if err != nil {
 		return BackupReport{}, err
 	}
@@ -269,4 +273,34 @@ func syncBackupDirectory(path string) error {
 		return err
 	}
 	return errors.Join(dir.Sync(), dir.Close())
+}
+
+func openBackupCopyForCheck(ctx context.Context, path string) (*sql.DB, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if err = ValidatePrivateStorage(absolute); err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(absolute)
+	if err != nil {
+		return nil, err
+	}
+	if err = validatePrivateFile(info); err != nil {
+		return nil, err
+	}
+	u := &url.URL{Scheme: "file", Path: absolute}
+	query := url.Values{"mode": []string{"rw"}, "_pragma": []string{"query_only(1)", "trusted_schema(0)"}}
+	u.RawQuery = query.Encode()
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err = db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
 }
