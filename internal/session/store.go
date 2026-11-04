@@ -118,6 +118,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initialize task storage: %w", err)
 	}
+	if err = s.initApprovals(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize approvals: %w", err)
+	}
 	return s, nil
 }
 
