@@ -9,9 +9,9 @@
 - **未验证／阻塞**：缺少真实环境或证据，不能写成通过。
 - **计划／原型**：设计目标或接口原型，不计为可用生产能力。
 
-最新已验证的远端源码提交为 **`1dc7527aa4e1ace854c23cfe3278b316f6708a04`**。协调者在本次更新交接中确认：已独立获取该精确提交的远端快照，**195/195 个 blob 全部核对一致**，并在该快照上完成构建与测试，结果见第 3 节。这修正了初版台账中仅有本地无 Git 元数据快照、无法绑定提交的证据缺口。台账编写者依据该验证交接更新记录，没有自行重复下载或重新运行整套检查。
+最新已验证的远端 `master` 为 **`114181c1f7356d89317e36ab76ac2bc5b94f0eaf`**。协调者于 2026-11-04 的最新交接确认：已独立获取该精确提交的远端快照，**200/200 个 blob 与本地源码核对一致**；干净远端快照构建及备份相关 race 测试通过。**全包测试和 vet 的最新结果来自本地运行，不是该精确远端快照的完整测试结果**，具体证据范围见第 3 节。台账编写者依据验证交接更新记录，没有自行重复下载或重新运行整套检查。
 
-此前远端 **`bfbeae7`** 因缺少 `SelectBounded` 而发生真实编译失败；不能用当时本地工作区的测试通过代替远端可构建性。该缺漏已修复，并在上述精确远端提交上重新验证通过。**源码完整性、构建与本地测试通过不代表已经部署或真实外部集成通过。** 本文件的后续文档提交不包含在上述已验证源码提交中。
+此前远端 **`bfbeae7`** 因缺少 `SelectBounded` 而发生真实编译失败；不能用当时本地工作区的测试通过代替远端可构建性。该缺漏已修复，修复时已在精确远端提交 `1dc7527aa4e1ace854c23cfe3278b316f6708a04` 上重新验证通过。**源码完整性、构建与本地测试通过不代表已经部署或真实外部集成通过。** 本文件的后续文档提交不包含在上述已验证源码提交中。
 
 [设计方案](QI_DESIGN_PLAN.md) 的第 2 节记录的是早期历史基线，其中“存储未接入”“没有长期记忆”等措辞不能作为当前实现状态。方案中的验收矩阵仍是目标，不应整表视为已通过。当前边界优先参考源码、README 和专项文档。
 
@@ -23,6 +23,7 @@
 | 模型与工具循环 | `internal/agent`、`internal/provider/openai.go`、`anthropic.go`；OpenAI-compatible Chat Completions 与原生 Anthropic Messages 文本/客户端工具适配 | 未验证真实供应商；不等于支持所有兼容端点、OpenAI Responses 或 Anthropic thinking/server-side tools |
 | 模型流与进度 | `internal/provider/stream.go`、`internal/tasks/live_text.go`、`internal/webui/events.go`；持久事件 SSE 与可选 OpenAI 文本预览 | Anthropic streaming 未实现，启用会拒绝；SSE 不是 exactly-once 投递或副作用重放 |
 | 持久任务与并发 | `internal/session/store.go`、`queue_store.go`、`internal/tasks/engine.go`、`queue.go`；SQLite WAL、单 engine 所有权、独立历史、每任务一个 outstanding turn、有界 FIFO 队列 | 重启将未完成／排队工作标记 interrupted，不自动续跑；不提供分布式调度或跨 daemon workspace 协调 |
+| 显式本地数据库备份 | `cmd/qi/backup.go`、`internal/session/backup.go`；`qi backup` 固定只读事务，通过 SQLite online backup API 捕获含已提交 WAL 的一致快照；`qi backup-verify` 在临时目录重建并检查 integrity、外键和已知表计数 | 不含 artifact 文件字节、workspace、外部 keys／凭据／配置或插件；不加密、不脱敏，不是生产恢复或外部副作用回滚；无自动覆盖恢复命令 |
 | 幂等提交与创建 | `internal/session/idempotency.go`、`task_creation.go`，对应 tasks/webui 实现；接受记录与输入/run/队列事务绑定 | 只保证接受阶段去重，不保证外部工具 exactly-once；无 key 的旧入口不能安全自动重试 |
 | 审批与提问卡 | `internal/tasks/approvals.go`、`questions.go`、`question_continuation.go`；精确动作审批与显式单次 Continue task | 回答问题不是执行授权；取消、崩溃或超时不撤销已经发生的副作用，unknown 需人工核对 |
 | 归档与恢复 | `internal/session/archive.go`、`internal/tasks/archive.go`、`internal/webui/archive.go` | 归档不是删除或释放配额；活动任务不能归档 |
@@ -37,18 +38,19 @@
 
 ### 最新精确远端快照验证
 
-以下结果来自协调者于 2026-11-04 的最新验证交接，目标均为 `1dc7527aa4e1ace854c23cfe3278b316f6708a04` 的独立远端快照：
+以下结果来自协调者于 2026-11-04 的最新验证交接，明确区分执行位置与范围：
 
-- 远端内容核对：**195/195 blobs 一致**。
-- 干净构建：`go build` **通过**。
-- 不使用测试结果缓存的全包检查：`go test ./... -count=1` **通过**。
-- JavaScript DOM 契约测试：**52/52 通过**。
-- 部署模板检查器 `deploy/check_templates.py`：**通过**。这是模板检查，不是目标主机部署、服务启动、Caddy/TLS 实机验收或公网连通性验证。
+- **精确远端快照** `114181c1f7356d89317e36ab76ac2bc5b94f0eaf`：**200/200 blobs 与本地一致**，干净快照 `go build` **通过**，**备份相关 race 测试通过**。交接没有提供该轮 race 的完整命令，不在此补造参数或扩大为全包 race。
+- **最新本地运行**：完整全包测试与 `go vet ./...` **通过**。即使 blob 核对一致，也不把本地运行写成精确远端快照上的全包测试或 vet 重跑。
+- 台账编写者本轮只检查备份源码、测试定义及 [备份说明](database-backup.md)，未重新执行上述测试。
+
+备份测试定义覆盖已提交 WAL 快照与 fixture 恢复、缺失／不安全路径拒绝、取消清理、发布时禁止覆盖、旧 schema 不迁移、无效数据库清理和离线 CLI 往返。源码中的测试包括 `TestBackupWALSnapshotAndRestore`、`TestBackupNoClobberAtPublication` 和 `TestBackupCommandOfflineRoundTrip`。这些使用测试数据库，不是生产恢复演练。
 
 ### 历史检查，不能代替最新提交的验证
 
+- **上一精确远端提交** `1dc7527aa4e1ace854c23cfe3278b316f6708a04`：195/195 blobs 核对、干净构建、`go test ./... -count=1`、52/52 DOM 测试及 `deploy/check_templates.py` 均通过。这些是历史验证，不能冒充最新提交的重跑。部署模板检查不代表目标主机部署、服务启动、TLS 或公网验收。
 - **18:25 UTC**：协调者报告旧本地快照 `go test -race ./...`、`go vet ./...` 退出 0，DOM 测试 47/47 通过。这些 race/vet 结果**未绑定到最新远端提交**，不在此冒充该提交的新运行结果。
-- **18:32 UTC**：台账编写者独立执行 `node --test internal/webui/app_test.cjs internal/webui/memory_test.cjs`，旧快照 47/47 通过、0 失败、0 跳过，退出 0。最新计数已增加为 52，不应继续将 47 作为当前套件数量。
+- **18:32 UTC**：台账编写者独立执行 `node --test internal/webui/app_test.cjs internal/webui/memory_test.cjs`，旧快照 47/47 通过、0 失败、0 跳过，退出 0。后续历史验证计数为 52；不能将该旧快照 47 项计数写成当前套件数量。
 - 初次默认 `go test ./...` 返回 `Go: Unknown option: test` 是 PATH 中工具不符，未运行 Go 测试。它与后来 `bfbeae7` 缺少 `SelectBounded` 的**真实源码编译失败是不同问题**；后者已经通过补齐代码和精确远端快照重验修复。
 
 DOM 测试使用模拟 DOM/浏览器 API，不是实际浏览器截图或真实网络验收。
@@ -68,10 +70,16 @@ codex --ask-for-approval never exec --sandbox workspace-write --help -- 'contrac
 
 这只支持该已安装版本接受参数形式，未触发 agent 执行；不能证明认证、模型访问、sandbox、文件修改或最终交付成功。Claude Code 没有找到可执行文件，只有官方文档核对，没有真实运行。README 中笼统的“installed-version compatibility 未验证”应按此处的有限 parser 检查细化理解，不应升级为集成通过。
 
+### 备份的具体边界
+
+备份是显式本地操作，不调用 provider、不启动 worker/plugin、不读取环境凭据。源库不经过可写 store opener，不触发迁移或应用恢复；但 SQLite 只读连接可能为 WAL 协调创建／更新共享内存 sidecar，不能承诺源文件系统逐字节不变。目标必须为不存在的新路径，私有 staging 经校验后以禁止覆盖的方式发布。发布后的同步或清理错误可能意味着最终文件已存在，应检查后再决定，不得盲目覆盖重试。
+
+快照保存数据库中的任务、历史、审批、记忆、幂等记录及 artifact **元数据**；不打包 artifact **字节**、工作区、外部 keys／凭据、环境配置或插件。若秘密曾写入对话或数据库字段，它仍可能进入明文备份，不能把“不读取外部 keys”理解为自动脱敏。`backup-verify` 只在可清理的临时目录核验重建副本；**不是生产恢复**，不恢复外部副作用、不授权重放。真实恢复仍需停机、保留原库及 sidecars、使用新路径并检查 interrupted/unknown 状态。
+
 ## 4. 尚未解除的阻塞与未验证项
 
 1. **部署与远端访问**：协调者交接记录 SSH 网络/DNS 阻塞。台账工作未重试连接，也没有部署成功、远端服务启动、TLS 或公网访问证据。具体主机和认证资料不进入此文件。
-2. **真实浏览器截图与视觉 QA**：协调者交接记录浏览器 socket 阻塞。52 项 DOM 契约测试不能替代桌面/移动端真实浏览器操作、布局验收或截图。当前不能声称已获得真实截图。
+2. **真实浏览器截图与视觉 QA**：协调者交接记录浏览器 socket 阻塞。既有 DOM 契约测试不能替代桌面/移动端真实浏览器操作、布局验收或截图。当前不能声称已获得真实截图。
 3. **真实模型和 coding 闭环**：无 live provider 验证；无真实 Codex 文件修改与测试闭环；无 Claude Code 执行验证。需在合适权限、凭据和隔离测试环境下单独验收。
 4. **公网执行能力**：public-preview 禁用 workers/MCP 是当前明确安全限制，不是可绕过的配置缺省。没有已验证 OS 隔离前不得开放这些入口。
 5. **隔离后端**：`internal/isolation` 只有策略/协议/生命周期 supervisor 与 read-only preflight。无生产 runtime adapter、独立 runner 认证传输、模型 gateway 或重启清理闭环。`qi isolation-preflight` 当前始终不能认证隔离就绪，不能作为启用 worker 的许可。
@@ -80,6 +88,7 @@ codex --ask-for-approval never exec --sandbox workspace-write --help -- 'contrac
 ## 5. 仍属于计划的工作与完成门槛
 
 - **安全隔离生产化**：实现独立身份 runner、固定镜像和真实约束检查、受控模型访问、崩溃/孤儿清理；在目标系统通过文件/进程/网络/资源耗尽/跨任务攻击验证后，才能重新评估公网执行。
+- **生产恢复验收**：数据库备份与测试 fixture 往返已实现，但真实停机恢复、artifact 文件和配置的独立恢复、部署重启与外部副作用核对仍需受控演练。
 - **真实纵向验收**：固定 provider 和 CLI 版本，在隔离测试仓库完成一项修改、运行测试、收集交付物、取消和故障恢复；保留实际命令、状态和结果。
 - **实际公网与 UI 验收**：解除访问与浏览器阻塞后，验证外部 TLS、proxy、登录/退出、失效 session、审批重放、刷新/断网、窄屏与键盘使用；只记录实际观察结果。
 - **设计中的后续产品范围**：自动重试、语义压缩、自动记忆/搜索、定时任务、消息渠道与可靠 outbox、更多供应商协议、完整 TUI 等仍不能由当前代码推导为已交付。详见设计方案，按独立验收门槛推进。
