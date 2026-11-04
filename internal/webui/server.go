@@ -40,13 +40,21 @@ type Config struct {
 	Token   string
 	Backend Backend
 }
+type loginWindow struct {
+	failures int
+	expires  time.Time
+}
+
+const maxLoginPeers = 4096
+const maxLoginFailures = 20
+
 type server struct {
 	cfg      Config
 	host     string
 	digest   [32]byte
 	mu       sync.Mutex
-	failures int
-	window   time.Time
+	attempts map[string]loginWindow
+	now      func() time.Time
 }
 
 // New requires HTTPS except on literal loopback hosts. Behind a TLS proxy, bind
@@ -67,7 +75,7 @@ func New(cfg Config) (http.Handler, error) {
 	if cfg.Backend == nil {
 		return nil, errors.New("web backend is required")
 	}
-	return &server{cfg: cfg, host: u.Host, digest: sha256.Sum256([]byte(cfg.Token))}, nil
+	return &server{cfg: cfg, host: u.Host, digest: sha256.Sum256([]byte(cfg.Token)), attempts: make(map[string]loginWindow), now: time.Now}, nil
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -91,23 +99,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cross-site request denied", http.StatusForbidden)
 		return
 	}
-	user, pass, ok := r.BasicAuth()
-	digest := sha256.Sum256([]byte(pass))
-	authenticated := ok && subtle.ConstantTimeCompare([]byte(user), []byte("qi")) == 1 && subtle.ConstantTimeCompare(digest[:], s.digest[:]) == 1
+	authenticated, limited := s.authenticate(r)
+	if limited {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "authentication temporarily rate limited", http.StatusTooManyRequests)
+		return
+	}
 	if !authenticated {
-		s.mu.Lock()
-		if time.Since(s.window) >= time.Minute {
-			s.window = time.Now()
-			s.failures = 0
-		}
-		s.failures++
-		limited := s.failures > 20
-		s.mu.Unlock()
-		if limited {
-			w.Header().Set("Retry-After", "60")
-			http.Error(w, "too many authentication failures", http.StatusTooManyRequests)
-			return
-		}
 		w.Header().Set("WWW-Authenticate", `Basic realm="qi", charset="UTF-8"`)
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
@@ -144,6 +142,58 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}
 }
+
+// authenticate checks the peer's failure budget BEFORE parsing or comparing
+// credentials. A blocked peer cannot test guesses, including a correct guess.
+// Never trust Forwarded/X-Forwarded-For supplied by an arbitrary caller.
+func (s *server) authenticate(r *http.Request) (authenticated, limited bool) {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		peer = r.RemoteAddr
+	}
+	if ip := net.ParseIP(peer); ip != nil {
+		peer = ip.String()
+	} else {
+		peer = "unknown"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	window, exists := s.attempts[peer]
+	if exists && !now.Before(window.expires) {
+		delete(s.attempts, peer)
+		exists = false
+		window = loginWindow{}
+	}
+	if exists && window.failures >= maxLoginFailures {
+		return false, true
+	}
+	if !exists && len(s.attempts) >= maxLoginPeers {
+		for key, value := range s.attempts {
+			if !now.Before(value.expires) {
+				delete(s.attempts, key)
+			}
+		}
+		if len(s.attempts) >= maxLoginPeers {
+			return false, true
+		}
+	}
+	user, pass, ok := r.BasicAuth()
+	digest := sha256.Sum256([]byte(pass))
+	authenticated = ok && subtle.ConstantTimeCompare([]byte(user), []byte("qi")) == 1 && subtle.ConstantTimeCompare(digest[:], s.digest[:]) == 1
+	if authenticated {
+		// Successful polling must not replenish another caller's failed-guess budget
+		// when a proxy or NAT shares this peer address.
+		return true, false
+	}
+	if !exists {
+		window.expires = now.Add(time.Minute)
+	}
+	window.failures++
+	s.attempts[peer] = window
+	return false, false
+}
+
 func respond(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(value)

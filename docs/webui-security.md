@@ -20,9 +20,21 @@ separate from the Web UI password. Do not expose real credentials in demos.
   HTTP at the proxy; do not encourage entering credentials before HTTPS.
 - Forwarded headers are not trusted. The proxy and its local network connection
   are part of the trusted deployment boundary. Do not log Authorization headers.
-- All Basic authentication failures share a bounded global limiter (20 per
-  minute). Correct credentials remain usable. This is a supplementary control,
-  not a replacement for high-entropy passwords and proxy connection/rate limits.
+- Login attempts are limited per actual TCP peer IP after 20 failures in one
+  minute. The budget is checked before inspecting credentials; even a correct
+  password is blocked until that peer's window expires. Different source ports
+  do not create new budgets. Forwarded/X-Forwarded-For headers are ignored.
+- Peer records are capped at 4,096 and expire after one minute. At capacity, new
+  peers are temporarily rejected rather than growing memory without bound.
+  An attacker on a different peer cannot consume an existing peer's budget.
+- **Reverse-proxy requirement:** enforce per-client login/connection rate limits
+  at the trusted edge, stripping caller-supplied forwarding headers. qi sees the
+  proxy as its TCP peer, so its fallback bucket is shared by proxied clients.
+  A malicious client behind the same proxy or NAT can temporarily block new
+  requests from that shared peer. The application does not claim to eliminate
+  shared-IP denial of service; use edge authentication/client-specific limits
+  and high-entropy passwords before public exposure. There is no trusted-proxy
+  client-IP setting in this version.
 - Browsers cache Basic credentials. There is no reliable application logout;
   close the private browser session or rotate the password and restart qi.
   Prefer a dedicated private window on a trusted device. Do not embed passwords

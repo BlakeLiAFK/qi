@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeBackend struct{ calls int }
@@ -127,8 +128,8 @@ func TestAuthenticationRateLimit(t *testing.T) {
 			t.Fatal(w.Code)
 		}
 	}
-	if w := request(h, "GET", "/", "", true, ""); w.Code != 200 {
-		t.Fatal("valid credential must remain usable")
+	if w := request(h, "GET", "/", "", true, ""); w.Code != 429 {
+		t.Fatal("blocked peer must not test even a correct credential")
 	}
 }
 func TestConfiguration(t *testing.T) {
@@ -176,5 +177,72 @@ func TestFetchMetadataAndReadOrigin(t *testing.T) {
 	}
 	if w := request(h, "GET", "/api/tasks", "", true, "https://evil.example"); w.Code != 403 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestLoginLimiterPeerIsolationAndExpiry(t *testing.T) {
+	h, _ := testServer(t)
+	s := h.(*server)
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	send := func(peer, forwarded, password string) int {
+		r := httptest.NewRequest("GET", "http://127.0.0.1:8080/", nil)
+		r.RemoteAddr = peer
+		r.SetBasicAuth("qi", password)
+		r.Header.Set("X-Forwarded-For", forwarded)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	for i := 0; i < 20; i++ {
+		if got := send("192.0.2.1:1000", "198.51.100.1", "wrong"); got != 401 {
+			t.Fatal(got)
+		}
+	}
+	if got := send("192.0.2.1:2000", "198.51.100.2", token); got != 429 {
+		t.Fatal("port or forwarded header bypass", got)
+	}
+	if got := send("192.0.2.2:1000", "198.51.100.1", token); got != 200 {
+		t.Fatal("unrelated peer blocked", got)
+	}
+	now = now.Add(time.Minute)
+	if got := send("192.0.2.1:3000", "", token); got != 200 {
+		t.Fatal("expired window blocked", got)
+	}
+}
+func TestLoginLimiterBoundedMemory(t *testing.T) {
+	h, _ := testServer(t)
+	s := h.(*server)
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	for i := 0; i < maxLoginPeers; i++ {
+		s.attempts[string(rune(i))] = loginWindow{failures: 1, expires: now.Add(time.Minute)}
+	}
+	if w := request(h, "GET", "/", "", true, ""); w.Code != 429 {
+		t.Fatal(w.Code)
+	}
+	if len(s.attempts) != maxLoginPeers {
+		t.Fatal("unbounded map")
+	}
+	now = now.Add(time.Minute)
+	if w := request(h, "GET", "/", "", true, ""); w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+}
+
+func TestSuccessfulPollingDoesNotResetFailedGuessBudget(t *testing.T) {
+	h, _ := testServer(t)
+	for i := 0; i < 20; i++ {
+		if w := request(h, "GET", "/", "", false, ""); w.Code != 401 {
+			t.Fatal(w.Code)
+		}
+		if i < 19 {
+			if w := request(h, "GET", "/", "", true, ""); w.Code != 200 {
+				t.Fatal(w.Code)
+			}
+		}
+	}
+	if w := request(h, "GET", "/", "", true, ""); w.Code != 429 {
+		t.Fatal("successful requests reset failure budget", w.Code)
 	}
 }
