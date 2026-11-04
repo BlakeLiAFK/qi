@@ -13,7 +13,7 @@ go build -o qi ./cmd/qi
 export OPENAI_MODEL='your-model'
 export OPENAI_API_KEY='your-key'
 # Optional for another compatible provider:
-# export OPENAI_BASE_URL='http://localhost:8080/v1'
+# export OPENAI_BASE_URL='http://127.0.0.1:8080/v1'
 ./qi -p 'Explain this project in one paragraph'
 ./qi
 ```
@@ -155,3 +155,14 @@ packages contain focused agent, transport, MCP, and worker lifecycle tests.
   the model; model errors and exhausted limits end the session with a nonzero exit.
 - Ctrl-C cancels model requests and shuts down workers/plugins. Local terminal input
   is blocking; cancellation while waiting for a line may require Enter or terminal exit.
+
+### Model transport security
+
+Remote `OPENAI_BASE_URL` endpoints must use HTTPS. Plain HTTP is permitted only
+when the configured hostname is a literal loopback IP, such as `127.0.0.1` or
+`[::1]`, for a local model server. `localhost`, DNS aliases, and other hostnames
+do not qualify. URL credentials, query strings, and fragments are rejected.
+Model requests never follow redirects, including redirects from HTTPS, to avoid
+forwarding API keys or conversation contents to another endpoint. Configure the
+final API root directly. HTTPS does not establish provider trust: choose a
+provider you trust with the full conversation and tool outputs.

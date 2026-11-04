@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
@@ -17,6 +19,8 @@ import (
 
 // OpenAI uses the OpenAI-compatible Chat Completions protocol. BaseURL is the
 // API root (for example https://api.openai.com/v1), not the completion endpoint.
+// Remote endpoints require HTTPS. HTTP is allowed only for literal loopback IPs.
+// Redirects are never followed, to avoid forwarding prompts or credentials.
 type OpenAI struct {
 	BaseURL string
 	APIKey  string
@@ -42,6 +46,25 @@ type message struct {
 type tool struct {
 	Type     string               `json:"type"`
 	Function agent.ToolDefinition `json:"function"`
+}
+
+// validateEndpoint deliberately does not resolve hostnames: localhost aliases and
+// DNS results cannot grant an exception to the HTTPS requirement.
+func validateEndpoint(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return errors.New("model endpoint must be an absolute URL without credentials, query, or fragment")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" {
+		ip, err := netip.ParseAddr(u.Hostname())
+		if err == nil && ip.Zone() == "" && ip.IsLoopback() {
+			return nil
+		}
+	}
+	return errors.New("model endpoint requires HTTPS; HTTP is allowed only for a literal loopback IP")
 }
 
 func (p *OpenAI) Complete(ctx context.Context, messages []agent.Message, definitions []agent.ToolDefinition) (agent.Message, error) {
@@ -73,6 +96,9 @@ func (p *OpenAI) Complete(ctx context.Context, messages []agent.Message, definit
 	if base == "" {
 		base = "https://api.openai.com/v1"
 	}
+	if err := validateEndpoint(base); err != nil {
+		return zero, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return zero, err
@@ -85,7 +111,11 @@ func (p *OpenAI) Complete(ctx context.Context, messages []agent.Message, definit
 	if client == nil {
 		client = &http.Client{Timeout: 120 * time.Second}
 	}
-	resp, err := client.Do(req)
+	// Copy instead of mutating a caller-owned client. Even a caller-supplied
+	// redirect policy cannot weaken the credential and prompt transport boundary.
+	safeClient := *client
+	safeClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := safeClient.Do(req)
 	if err != nil {
 		return zero, err
 	}

@@ -69,3 +69,68 @@ func TestProviderCancellation(t *testing.T) {
 		t.Fatal("expected canceled request")
 	}
 }
+
+func TestEndpointTransportPolicy(t *testing.T) {
+	cases := []struct {
+		raw     string
+		allowed bool
+	}{
+		{"https://api.openai.com/v1", true},
+		{"https://localhost:8443/v1", true},
+		{"http://127.0.0.1:8080/v1", true},
+		{"http://127.42.0.1/v1", true},
+		{"http://[::1]:8080/v1", true},
+		{"http://localhost:8080/v1", false},
+		{"http://localhost.evil.example/v1", false},
+		{"http://127.0.0.1.evil.example/v1", false},
+		{"http://127.0.0.1@evil.example/v1", false},
+		{"http://192.168.1.2/v1", false},
+		{"http://api.openai.com/v1", false},
+		{"http://2130706433/v1", false},
+		{"http://[::1%25eth0]/v1", false},
+		{"https://user:secret@example.com/v1", false},
+		{"https://example.com/v1?key=secret", false},
+		{"https://example.com/v1?", false},
+		{"https://example.com/v1#fragment", false},
+		{"//example.com/v1", false},
+		{"file:///tmp/model", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			if err := validateEndpoint(tc.raw); (err == nil) != tc.allowed {
+				t.Fatalf("allowed=%v, error=%v", tc.allowed, err)
+			}
+		})
+	}
+}
+
+func TestUnsafeEndpointRejectedBeforeRequest(t *testing.T) {
+	p := OpenAI{BaseURL: "http://api.example.com/v1", APIKey: "never-transmit", Model: "test"}
+	if _, err := p.Complete(context.Background(), nil, nil); err == nil || !strings.Contains(err.Error(), "requires HTTPS") {
+		t.Fatalf("expected transport validation, got %v", err)
+	}
+}
+
+func TestRedirectNeverForwardsPromptOrKey(t *testing.T) {
+	forwarded := false
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = true
+		w.Write([]byte(`{"choices":[{"message":{"content":"unsafe"}}]}`))
+	}))
+	defer destination.Close()
+	source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+	client := source.Client()
+	customPolicyCalled := false
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { customPolicyCalled = true; return nil }
+	p := OpenAI{BaseURL: source.URL, APIKey: "secret", Model: "test", Client: client}
+	_, err := p.Complete(context.Background(), []agent.Message{{Role: "user", Content: "private prompt"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 307") || forwarded || customPolicyCalled {
+		t.Fatalf("error=%v forwarded=%v custom policy=%v", err, forwarded, customPolicyCalled)
+	}
+	if client.CheckRedirect == nil {
+		t.Fatal("mutated caller-owned client")
+	}
+}
