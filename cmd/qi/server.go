@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gopi/internal/agent"
+	"gopi/internal/artifacts"
 	"gopi/internal/contextbudget"
 	"gopi/internal/provider"
 	"gopi/internal/session"
@@ -29,6 +30,8 @@ type daemonConfig struct {
 	mcp                                             []tasks.MCPServer
 	contextBytes                                    int
 	skills                                          *skills.Catalog
+	artifactDir                                     string
+	questions                                       bool
 }
 
 // openDaemon owns one database and one engine. Coding tools require explicit
@@ -42,7 +45,15 @@ func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), erro
 	if err != nil {
 		return nil, nil, err
 	}
-	engine, err := tasks.New(ctx, store, tasks.Config{Coding: c.coding, MCP: c.mcp, Skills: c.skills, Factory: func(_ string) (*agent.Agent, error) {
+	var deliverables *artifacts.Service
+	if c.artifactDir != "" {
+		deliverables, err = artifacts.New(c.artifactDir, store)
+		if err != nil {
+			_ = store.Close()
+			return nil, nil, err
+		}
+	}
+	engine, err := tasks.New(ctx, store, tasks.Config{Coding: c.coding, MCP: c.mcp, Skills: c.skills, Questions: c.questions, Factory: func(_ string) (*agent.Agent, error) {
 		return &agent.Agent{Model: &contextbudget.Model{Next: &provider.OpenAI{Model: c.model, BaseURL: c.baseURL, APIKey: c.apiKey}, Config: contextbudget.Config{MaxInputBytes: c.contextBytes}}, MaxSteps: c.maxSteps}, nil
 	}})
 	if err != nil {
@@ -50,7 +61,7 @@ func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), erro
 		return nil, nil, err
 	}
 	closeAll := func() { engine.Close(); _ = store.Close() }
-	handler, err := webui.New(webui.Config{Origin: c.origin, Token: c.token, Backend: webui.EngineBackend{Engine: engine}})
+	handler, err := webui.New(webui.Config{Origin: c.origin, Token: c.token, Backend: webui.EngineBackend{Engine: engine}, Artifacts: deliverables})
 	if err != nil {
 		closeAll()
 		return nil, nil, err
@@ -79,6 +90,8 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	}
 	listen := fs.String("listen", "127.0.0.1:8686", "literal loopback listening address")
 	origin := fs.String("origin", "", "exact browser origin, no trailing slash (default http://listen address)")
+	questions := fs.Bool("question-cards", false, "enable task-local question cards; answers grant no permission and do not resume runs")
+	artifactDir := fs.String("artifact-dir", "", "explicit existing deliverable root; task-scoped files only; disabled by default")
 	db := fs.String("db", "", "SQLite path (default user config directory/qi/tasks.db)")
 	model := fs.String("model", env("OPENAI_MODEL"), "model name (or OPENAI_MODEL; required)")
 	base := fs.String("base-url", env("OPENAI_BASE_URL"), "OpenAI-compatible API root")
@@ -162,7 +175,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 		}
 		*db = filepath.Join(dir, "tasks.db")
 	}
-	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, coding: coding, mcp: mcp, contextBytes: contextBytes, skills: catalog})
+	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, coding: coding, mcp: mcp, contextBytes: contextBytes, skills: catalog, artifactDir: *artifactDir, questions: *questions})
 	if err != nil {
 		return err
 	}
@@ -177,7 +190,10 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	if len(mcp) > 0 {
 		fmt.Fprintln(out, "Static MCP tools enabled: server startup and each exact call require WebUI approval. This is not a sandbox.")
 	}
-	if coding == nil && len(mcp) == 0 {
+	if *questions {
+		fmt.Fprintln(out, "Question cards enabled: answers are task data, not execution approval; send a new message to continue.")
+	}
+	if coding == nil && len(mcp) == 0 && !*questions {
 		fmt.Fprintln(out, "Server tools are disabled.")
 	}
 	select {

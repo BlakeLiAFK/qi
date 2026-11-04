@@ -105,8 +105,8 @@ must be validated separately before using real credentials.
 
 The run owns the subprocess lifetime. On supported Unix hosts qi kills the
 worker process group after every parent exit, including normal exits, and on
-cancellation. Processes that deliberately escape the group are not confined. Output is limited to the first 64 KiB and
-reported as truncated when needed; runtime defaults to 15 minutes, capped at one
+cancellation. Processes that deliberately escape the group are not confined. Output is capped at 64 KiB, retaining a bounded prefix and the latest tail.
+Truncated output includes an explicit gap marker and a truncation flag; runtime defaults to 15 minutes, capped at one
 hour for daemon coding tasks. Completion means the CLI exited successfully, not
 that its changes are correct or have passed tests. A process that fails or is
 cancelled may have changed files; its approval becomes `unknown`, and the model

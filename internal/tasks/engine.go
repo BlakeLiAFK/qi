@@ -26,14 +26,24 @@ type Action struct {
 	Label string `json:"label"`
 }
 type Card struct {
-	ID       string   `json:"id"`
-	Revision int64    `json:"revision"`
-	Title    string   `json:"title"`
-	Summary  string   `json:"summary"`
-	State    string   `json:"state"`
-	Actions  []Action `json:"actions"`
+	Kind      string          `json:"kind,omitempty"`
+	TaskID    string          `json:"task_id,omitempty"`
+	RunID     string          `json:"run_id,omitempty"`
+	InputType string          `json:"input_type,omitempty"`
+	Choices   []Action        `json:"choices,omitempty"`
+	ExpiresAt time.Time       `json:"expires_at,omitempty"`
+	Answer    *QuestionAnswer `json:"answer,omitempty"`
+	ID        string          `json:"id"`
+	Revision  int64           `json:"revision"`
+	Title     string          `json:"title"`
+	Summary   string          `json:"summary"`
+	State     string          `json:"state"`
+	Actions   []Action        `json:"actions"`
 }
 type ActionRequest struct {
+	TaskID   string `json:"task_id,omitempty"`
+	ChoiceID string `json:"choice_id,omitempty"`
+	Text     string `json:"text,omitempty"`
 	CardID   string `json:"card_id"`
 	Revision int64  `json:"revision"`
 	Action   string `json:"action"`
@@ -58,6 +68,7 @@ type Task struct {
 	Cards         []Card          `json:"cards"`
 }
 type Config struct {
+	Questions      bool
 	Skills         *skills.Catalog
 	MCP            []MCPServer
 	Coding         *CodingConfig
@@ -312,8 +323,11 @@ func (e *Engine) execute(ctx context.Context, id string, run Run, runner *agent.
 	}()
 	// Copy the runner so factories may safely return a template.
 	copyRunner := *runner
+	if e.cfg.Questions {
+		copyRunner.Tools = append(append([]agent.Tool(nil), runner.Tools...), questionTool{engine: e, taskID: id, runID: run.ID}, questionAnswersTool{engine: e, taskID: id})
+	}
 	if e.cfg.Coding != nil {
-		copyRunner.Tools = append(append([]agent.Tool(nil), runner.Tools...), codingTool{engine: e, taskID: id, runID: run.ID, config: e.cfg.Coding})
+		copyRunner.Tools = append(append([]agent.Tool(nil), copyRunner.Tools...), codingTool{engine: e, taskID: id, runID: run.ID, config: e.cfg.Coding})
 	}
 	for _, server := range e.cfg.MCP {
 		for _, tool := range server.Tools {
@@ -417,7 +431,7 @@ func (e *Engine) AddCard(ctx context.Context, id, runID string, c Card) error {
 	if e.closed {
 		return ErrClosed
 	}
-	if c.ID == "" || c.Title == "" {
+	if c.ID == "" || c.Title == "" || len(c.ID) > 128 || len(c.Title) > 200 || len(c.Summary) > 8000 {
 		return errors.New("card ID and title required")
 	}
 	if c.Revision != 0 {
@@ -434,7 +448,19 @@ func (e *Engine) AddCard(ctx context.Context, id, runID string, c Card) error {
 	}
 	c.Revision = 1
 	c.State = "pending"
-	c.Actions = []Action{{ID: "approve", Label: "Approve"}, {ID: "reject", Label: "Reject"}}
+	c.TaskID, c.RunID = id, runID
+	if c.Kind == "question" {
+		if err := prepareQuestion(&c); err != nil {
+			return err
+		}
+	} else if c.Kind == "" || c.Kind == "approval" {
+		if c.InputType != "" || len(c.Choices) != 0 || c.Answer != nil {
+			return errors.New("question fields require question kind")
+		}
+		c.Actions = []Action{{ID: "approve", Label: "Approve"}, {ID: "reject", Label: "Reject"}}
+	} else {
+		return errors.New("unsupported card kind")
+	}
 	payload, err := json.Marshal(c)
 	if err != nil {
 		return err
@@ -448,7 +474,7 @@ func (e *Engine) Act(ctx context.Context, id string, req ActionRequest) error {
 	if e.closed {
 		return ErrClosed
 	}
-	if req.Action != "approve" && req.Action != "reject" {
+	if req.Action != "approve" && req.Action != "reject" && req.Action != "answer" {
 		return errors.New("unsupported card action")
 	}
 	t, err := e.Get(ctx, id)
@@ -462,12 +488,18 @@ func (e *Engine) Act(ctx context.Context, id string, req ActionRequest) error {
 		if c.Revision != req.Revision || c.State != "pending" {
 			return ErrStaleCard
 		}
-		c.Revision++
-		if req.Action == "approve" {
+		if c.Kind == "question" {
+			if err := answerQuestion(&c, id, req); err != nil {
+				return err
+			}
+		} else if req.Action == "answer" || req.Text != "" || req.ChoiceID != "" {
+			return errors.New("invalid approval action")
+		} else if req.Action == "approve" {
 			c.State = "approved"
 		} else {
 			c.State = "rejected"
 		}
+		c.Revision++
 		payload, _ := json.Marshal(c)
 		events, err := e.store.Events(ctx, id, 0)
 		if err != nil {

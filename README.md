@@ -71,6 +71,56 @@ that bucket. Configure additional rate limiting at the proxy edge.
 `qi serve -h` lists server options. Ctrl-C or SIGTERM shuts down the server and
 cancels active runs. The UI polls state; it does not stream model tokens.
 
+## Task question cards
+
+```sh
+./qi serve -question-cards
+```
+
+This explicit flag exposes only the task-local `ask_user_question` and
+`get_question_answers` tools. Without it, they are not available to the model.
+Questions can request a bounded choice or short text response in the WebUI.
+Answers are recorded with the task, not treated as permission to run coding or
+MCP actions. Answering does **not** automatically resume or start a model turn;
+send a new message to continue. Do not enter passwords, API keys, or other secrets
+in question cards. Question features are separate from execution approvals.
+
+## Registered deliverables
+
+```sh
+mkdir -m 700 /private/path/qi-deliverables
+./qi serve -artifact-dir /private/path/qi-deliverables
+```
+
+Use a dedicated existing directory, separate from credentials, repositories,
+and the SQLite database. Nothing is exposed by default. Files must already exist
+under `<artifact-dir>/<task-id>/<relative-path>`. The directory and all opened
+path components must not be symlinks. Only regular files up to 32 MiB are allowed;
+dotfile segments, absolute paths, traversal, and backslash paths are rejected.
+
+Registration is currently an authenticated API operation:
+`POST /api/tasks/<task-id>/artifacts` with JSON `{"path":"report.pdf"}`.
+It registers metadata and a content hash for an existing task-scoped file, not an
+upload or a new file creation. There is no model auto-registration or WebUI upload
+flow in this slice. The WebUI lists registered deliverables and offers downloads.
+`GET /api/tasks/<task-id>/artifacts` lists metadata, and app-provided download links
+point to authenticated artifact IDs, never raw filesystem paths.
+
+Downloads recheck size and hash, refusing changed or missing files. They are served
+as attachments with an octet-stream type and sandbox policy, so generated HTML/SVG
+is not rendered at the authenticated app origin. Registration does not copy files
+or preserve old bytes. Keep the files available and use a new registration for a
+changed version. All holders of the single-user daemon token can access registered
+tasks and files; this is not recipient-specific sharing. Never place secrets in
+the deliverable tree, and do not enable it on a public preview without access controls.
+
+Path checks and hashes are **not a hostile same-UID security boundary**. For untrusted
+outputs, use storage owned by a separate daemon identity that workers cannot write;
+a trusted operator should review and copy outputs into that storage. Merely naming
+a directory “private” does not isolate same-user processes. Files with multiple
+hardlinks are rejected, but link/unlink races and hostile same-UID replacement
+cannot be fully prevented by this layer.
+
 ## Attach a terminal to daemon tasks
 
 In another terminal, set `QI_WEB_TOKEN` to the **same** token used by `qi serve`:
@@ -96,8 +146,8 @@ Pending approvals are shown as a notice. Review the exact action in the WebUI,
 then use `/wait` to follow completion. One-shot `attach -p` returns a nonzero exit
 while approval is pending, rather than claiming the action completed. Exiting,
 EOF, or Ctrl-C disconnects without cancelling daemon work. Cancel explicitly in
-the WebUI or with `/cancel`. Ctrl-C while waiting for terminal input may require
-Enter, because line input is blocking.
+the WebUI or with `/cancel`. Ctrl-C interrupts idle terminal input and approval prompts without requiring
+Enter; attached clients still leave daemon work running.
 
 Use `-url http://127.0.0.1:9000` for another local daemon or an explicitly trusted
 HTTPS origin for a configured proxy. The URL must not contain credentials, paths,
@@ -276,7 +326,7 @@ allows its waiting turn to proceed; rejecting it does not run the command. The
 claim is single-use. The default approval expiry is five minutes. An approval is
 not broad permission for later commands. Informational cards remain nonexecuting.
 
-The daemon waits for child completion and records bounded output (64 KiB) and
+The daemon waits for child completion and records bounded prefix-plus-tail output (64 KiB, with an explicit gap marker when truncated) and
 run/approval status. Cancelling the turn or stopping the daemon terminates the
 worker, but cannot undo file or network changes. A failed, cancelled, or interrupted
 process can have an unknown outcome and requires checking the workspace before
@@ -333,8 +383,9 @@ mode. Commands needing interactive permission or input may fail in this
 noninteractive mode. These invocation forms are used by both standalone and
 daemon workers; the daemon additionally requires its action-specific approval.
 
-Worker starts return task IDs. Status reads return up to 64 KiB of combined output
-and a truncation flag. Runtime defaults to 15 minutes (`-worker-timeout` changes it).
+Worker starts return task IDs. Status reads return up to 64 KiB of combined output, retaining the beginning
+and latest ending rather than discarding final results. Truncation is indicated
+by a gap marker in the output and a separate truncation flag. Runtime defaults to 15 minutes (`-worker-timeout` changes it).
 Up to 100 tasks are retained per process. Tasks and their output are in memory only;
 all active workers are cancelled when qi exits, including after a one-shot answer.
 For work that needs multiple follow-up prompts, use interactive mode. There is no
@@ -367,8 +418,8 @@ WebUI, and worker lifecycle behavior.
 - `-max-steps` bounds model calls per turn (default 20). Tool errors are returned to
   the model; model errors and exhausted limits end the session with a nonzero exit.
 - Ctrl-C in standalone/server mode cancels their work; attached clients disconnect
-  without cancelling daemon work. Local terminal input
-  is blocking; cancellation while waiting for a line may require Enter or terminal exit.
+  without cancelling daemon work. Idle stdin and approval waits are cancellable;
+  their input watcher is stopped and joined on exit.
 
 ### Model transport security
 

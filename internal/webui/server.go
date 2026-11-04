@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"gopi/internal/artifacts"
 	"gopi/internal/skills"
 	"gopi/internal/tasks"
 )
@@ -48,9 +49,10 @@ type SkillsBackend interface {
 	StartWithSkills(context.Context, string, string, []string) error
 }
 type Config struct {
-	Origin  string
-	Token   string
-	Backend Backend
+	Artifacts *artifacts.Service
+	Origin    string
+	Token     string
+	Backend   Backend
 }
 type loginWindow struct {
 	failures int
@@ -161,6 +163,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.tasks(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/api/tasks/") {
+			if s.artifactRoute(w, r) {
+				return
+			}
 			s.task(w, r)
 			return
 		}
@@ -342,7 +347,7 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		err = s.cfg.Backend.Cancel(r.Context(), id)
 	case "actions":
 		var req ActionRequest
-		if decode(w, r, &req) != nil || req.CardID == "" || req.Action == "" || req.Revision < 1 || len(req.CardID) > 128 || len(req.Action) > 128 {
+		if decode(w, r, &req) != nil || req.CardID == "" || req.Action == "" || req.Revision < 1 || len(req.CardID) > 128 || len(req.Action) > 128 || len(req.TaskID) > 128 || len(req.ChoiceID) > 128 || len(req.Text) > 8000 {
 			http.Error(w, "invalid action", 400)
 			return
 		}

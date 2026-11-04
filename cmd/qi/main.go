@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -110,8 +109,8 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 	if err != nil {
 		return err
 	}
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 4096), 1<<20)
+	scanner := newInputSession(ctx, in)
+	defer scanner.close()
 	var ts []agent.Tool
 	var clients []*plugins.Client
 	defer func() {
@@ -205,11 +204,14 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 type approvedTool struct {
 	agent.Tool
 	yes bool
-	in  *bufio.Scanner
+	in  lineInput
 	out io.Writer
 }
 
 func (t approvedTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if !t.yes {
 		// Quote untrusted strings so terminal control sequences cannot forge prompts.
 		fmt.Fprintf(t.out, "Allow tool %q with arguments %q? [y/N] ", t.Definition().Name, string(args))

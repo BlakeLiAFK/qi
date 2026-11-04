@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -223,8 +222,8 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 		return send(*prompt)
 	}
 	show(task)
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 4096), 1<<20)
+	scanner := newInputSession(ctx, in)
+	defer scanner.close()
 	fmt.Fprintln(diagnostics, "Attached. /history, /wait, /cancel, /skills, /use-skills names, /quit. Daemon work continues when you disconnect.")
 	for {
 		if err := ctx.Err(); err != nil {
