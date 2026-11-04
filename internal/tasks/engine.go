@@ -48,6 +48,7 @@ type Task struct {
 	Cards     []Card          `json:"cards"`
 }
 type Config struct {
+	Coding         *CodingConfig
 	Factory        func(taskID string) (*agent.Agent, error)
 	MaxTasks       int
 	MaxConcurrent  int
@@ -86,6 +87,11 @@ func New(ctx context.Context, s *session.Store, cfg Config) (*Engine, error) {
 	if cfg.MaxPromptBytes <= 0 {
 		cfg.MaxPromptBytes = 64 * 1024
 	}
+	coding, err := prepareCoding(cfg.Coding)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Coding = coding
 	release, err := s.AcquireEngineLock()
 	if err != nil {
 		return nil, err
@@ -277,6 +283,8 @@ func repairInterrupted(history []agent.Message) []agent.Message {
 }
 func (e *Engine) execute(ctx context.Context, id string, run Run, runner *agent.Agent, history []agent.Message, revision int64, a *active) {
 	defer func() { a.cancel(); e.mu.Lock(); delete(e.active, id); close(a.done); e.mu.Unlock() }()
+	// Revoke before publishing done, so callers cannot observe orphan approvals.
+	defer func() { _ = e.store.RevokeRunApprovals(context.Background(), id, run.ID) }()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			_ = e.store.FinishRun(context.Background(), run.ID, "failed", fmt.Sprintf("agent panic: %v", recovered))
@@ -284,6 +292,9 @@ func (e *Engine) execute(ctx context.Context, id string, run Run, runner *agent.
 	}()
 	// Copy the runner so factories may safely return a template.
 	copyRunner := *runner
+	if e.cfg.Coding != nil {
+		copyRunner.Tools = append(append([]agent.Tool(nil), runner.Tools...), codingTool{engine: e, taskID: id, runID: run.ID, config: e.cfg.Coding})
+	}
 	var persistErr error
 	original := copyRunner.OnEvent
 	copyRunner.OnEvent = func(ev agent.Event) {

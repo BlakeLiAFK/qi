@@ -161,7 +161,7 @@ func (s *Store) RequestApproval(ctx context.Context, taskID, runID string, actio
 	}
 	id := hex.EncodeToString(token[:])
 	raw, _ := json.Marshal(normalized)
-	return scanApproval(s.db.QueryRowContext(ctx, `INSERT INTO approvals(id,task_id,run_id,revision,digest,action,status,created_at,expires_at,updated_at) SELECT ?,session_id,id,1,?,?,'pending',?,?,? FROM runs WHERE id=? AND session_id=? RETURNING `+approvalColumns, id, digest, string(raw), now.UnixNano(), expiry.UnixNano(), now.UnixNano(), runID, taskID))
+	return scanApproval(s.db.QueryRowContext(ctx, `INSERT INTO approvals(id,task_id,run_id,revision,digest,action,status,created_at,expires_at,updated_at) SELECT ?,session_id,id,1,?,?,'pending',?,?,? FROM runs WHERE id=? AND session_id=? AND status='running' RETURNING `+approvalColumns, id, digest, string(raw), now.UnixNano(), expiry.UnixNano(), now.UnixNano(), runID, taskID))
 }
 func (s *Store) GetApproval(ctx context.Context, taskID, id string) (Approval, error) {
 	return scanApproval(s.db.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approvals WHERE task_id=? AND id=?`, taskID, id))
@@ -212,7 +212,7 @@ func (s *Store) DecideApproval(ctx context.Context, taskID, id string, revision 
 		status = "approved"
 	}
 	now := time.Now().UTC().UnixNano()
-	return approvalFreshTransition(scanApproval(s.db.QueryRowContext(ctx, `UPDATE approvals SET status=?,revision=revision+1,updated_at=? WHERE task_id=? AND id=? AND revision=? AND digest=? AND status='pending' AND expires_at>? RETURNING `+approvalColumns, status, now, taskID, id, revision, digest, now)))
+	return approvalFreshTransition(scanApproval(s.db.QueryRowContext(ctx, `UPDATE approvals SET status=?,revision=revision+1,updated_at=? WHERE task_id=? AND id=? AND revision=? AND digest=? AND status='pending' AND expires_at>? AND EXISTS (SELECT 1 FROM runs WHERE runs.id=approvals.run_id AND runs.session_id=approvals.task_id AND runs.status='running') RETURNING `+approvalColumns, status, now, taskID, id, revision, digest, now)))
 }
 
 // ClaimApproval durably consumes a decision before any dispatch. A crash after
@@ -226,7 +226,7 @@ func (s *Store) ClaimApproval(ctx context.Context, taskID, id string, revision i
 		return Approval{}, err
 	}
 	now := time.Now().UTC().UnixNano()
-	return approvalFreshTransition(scanApproval(s.db.QueryRowContext(ctx, `UPDATE approvals SET status='executing',revision=revision+1,updated_at=? WHERE task_id=? AND id=? AND revision=? AND digest=? AND status='approved' AND expires_at>? RETURNING `+approvalColumns, now, taskID, id, revision, digest, now)))
+	return approvalFreshTransition(scanApproval(s.db.QueryRowContext(ctx, `UPDATE approvals SET status='executing',revision=revision+1,updated_at=? WHERE task_id=? AND id=? AND revision=? AND digest=? AND status='approved' AND expires_at>? AND EXISTS (SELECT 1 FROM runs WHERE runs.id=approvals.run_id AND runs.session_id=approvals.task_id AND runs.status='running') RETURNING `+approvalColumns, now, taskID, id, revision, digest, now)))
 }
 func (s *Store) FinishApproval(ctx context.Context, taskID, id string, revision int64, outcome string) (Approval, error) {
 	if outcome != "succeeded" && outcome != "failed" && outcome != "unknown" {
@@ -235,8 +235,18 @@ func (s *Store) FinishApproval(ctx context.Context, taskID, id string, revision 
 	return approvalTransition(scanApproval(s.db.QueryRowContext(ctx, `UPDATE approvals SET status=?,revision=revision+1,updated_at=? WHERE task_id=? AND id=? AND revision=? AND status='executing' RETURNING `+approvalColumns, outcome, time.Now().UTC().UnixNano(), taskID, id, revision)))
 }
 
-// InterruptApprovals requires exclusive engine ownership. It never replays work.
+// InterruptApprovals requires exclusive engine ownership. It denies abandoned
+// unclaimed decisions and marks claimed operations unknown. It never replays work.
 func (s *Store) InterruptApprovals(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE approvals SET status='unknown',revision=revision+1,updated_at=? WHERE status='executing'`, time.Now().UTC().UnixNano())
+	_, err := s.db.ExecContext(ctx, `UPDATE approvals SET status=CASE WHEN status='executing' THEN 'unknown' ELSE 'denied' END,revision=revision+1,updated_at=? WHERE status IN ('pending','approved','executing')`, time.Now().UTC().UnixNano())
+	return err
+}
+
+// RevokeRunApprovals invalidates unclaimed decisions when their originating run
+// exits. Claimed operations keep their outcome tracking; revocation must never
+// turn a possibly dispatched operation into a false "nothing happened" denial.
+// It is idempotent and scoped to both task and run.
+func (s *Store) RevokeRunApprovals(ctx context.Context, taskID, runID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE approvals SET status='denied',revision=revision+1,updated_at=? WHERE task_id=? AND run_id=? AND status IN ('pending','approved')`, time.Now().UTC().UnixNano(), taskID, runID)
 	return err
 }

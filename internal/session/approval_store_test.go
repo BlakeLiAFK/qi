@@ -219,3 +219,116 @@ func TestApprovalLateClaimCannotDispatch(t *testing.T) {
 		t.Fatal("late claim accepted", err)
 	}
 }
+
+func TestApprovalRunRevocationAndRestart(t *testing.T) {
+	s, _, first := approvalFixture(t)
+	ctx := context.Background()
+	makeApproval := func() Approval {
+		t.Helper()
+		a, err := s.RequestApproval(ctx, first.TaskID, first.RunID, first.Action, time.Now().Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	approved := makeApproval()
+	var err error
+	approved, err = s.DecideApproval(ctx, approved.TaskID, approved.ID, approved.Revision, approved.Digest, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed := makeApproval()
+	claimed, err = s.DecideApproval(ctx, claimed.TaskID, claimed.ID, claimed.Revision, claimed.Digest, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = s.ClaimApproval(ctx, claimed.TaskID, claimed.ID, claimed.Revision, claimed.Action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RevokeRunApprovals(ctx, "other-task", first.RunID); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := s.GetApproval(ctx, first.TaskID, first.ID)
+	if err != nil || unchanged.Status != "pending" {
+		t.Fatal(unchanged, err)
+	}
+	if err = s.RevokeRunApprovals(ctx, first.TaskID, first.RunID); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []Approval{first, approved} {
+		got, err := s.GetApproval(ctx, a.TaskID, a.ID)
+		if err != nil || got.Status != "denied" || got.Revision != a.Revision+1 {
+			t.Fatal(got, err)
+		}
+	}
+	executing, err := s.GetApproval(ctx, claimed.TaskID, claimed.ID)
+	if err != nil || executing.Status != "executing" {
+		t.Fatal(executing, err)
+	}
+	if err = s.RevokeRunApprovals(ctx, first.TaskID, first.RunID); err != nil {
+		t.Fatal(err)
+	}
+	denied, err := s.GetApproval(ctx, first.TaskID, first.ID)
+	if err != nil || denied.Revision != first.Revision+1 {
+		t.Fatal("non-idempotent revocation", denied, err)
+	}
+	pending := makeApproval()
+	approveOnRestart := makeApproval()
+	approveOnRestart, err = s.DecideApproval(ctx, approveOnRestart.TaskID, approveOnRestart.ID, approveOnRestart.Revision, approveOnRestart.Digest, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.InterruptRuns(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.InterruptApprovals(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []Approval{pending, approveOnRestart} {
+		got, err := s.GetApproval(ctx, a.TaskID, a.ID)
+		if err != nil || got.Status != "denied" {
+			t.Fatal(got, err)
+		}
+	}
+	unknown, err := s.GetApproval(ctx, claimed.TaskID, claimed.ID)
+	if err != nil || unknown.Status != "unknown" {
+		t.Fatal(unknown, err)
+	}
+}
+
+func TestApprovalRequiresActiveOriginatingRun(t *testing.T) {
+	for _, status := range []string{"completed", "failed", "cancelled", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			s, _, pending := approvalFixture(t)
+			ctx := context.Background()
+			approved, err := s.RequestApproval(ctx, pending.TaskID, pending.RunID, pending.Action, time.Now().Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			approved, err = s.DecideApproval(ctx, approved.TaskID, approved.ID, approved.Revision, approved.Digest, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.FinishRun(ctx, pending.RunID, status, ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.RequestApproval(ctx, pending.TaskID, pending.RunID, pending.Action, time.Now().Add(time.Hour)); !errors.Is(err, ErrNotFound) {
+				t.Fatal("inactive request", err)
+			}
+			if _, err = s.DecideApproval(ctx, pending.TaskID, pending.ID, pending.Revision, pending.Digest, true); !errors.Is(err, ErrApprovalUnavailable) {
+				t.Fatal("inactive decision", err)
+			}
+			if _, err = s.ClaimApproval(ctx, approved.TaskID, approved.ID, approved.Revision, approved.Action); !errors.Is(err, ErrApprovalUnavailable) {
+				t.Fatal("inactive claim", err)
+			}
+			// Starting a newer run must never revive the previous run's decisions.
+			if _, err = s.CreateRun(ctx, pending.TaskID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.ClaimApproval(ctx, approved.TaskID, approved.ID, approved.Revision, approved.Action); !errors.Is(err, ErrApprovalUnavailable) {
+				t.Fatal("revived claim", err)
+			}
+		})
+	}
+}

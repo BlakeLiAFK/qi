@@ -7,8 +7,8 @@ import (
 )
 
 // Approval decisions are durable, exact-action records. They are not executable
-// UI cards and are deliberately not exposed as model-callable tools. No current
-// engine adapter dispatches external effects using these decisions.
+// UI cards and are deliberately not exposed as model-callable decision tools.
+// The optional coding adapter consumes an exact decision before dispatch.
 type Approval = session.Approval
 type ApprovalAction = session.ApprovalAction
 
