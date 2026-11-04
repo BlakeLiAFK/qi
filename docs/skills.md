@@ -1,9 +1,10 @@
-# Explicit local skills (library primitive)
+# Explicit local skills
 
 `internal/skills` provides original, dependency-free discovery and explicit
-selection primitives. This is not Pi compatibility and is not wired into qi's
-CLI, WebUI, task engine, or model context yet. No tool, command, script, plugin,
-network request, or worker is invoked by discovery or selection.
+selection primitives, with opt-in task-engine integration. This is not Pi
+compatibility. No tool, command, script, plugin, network request, or worker is
+invoked by discovery or selection. CLI and HTTP adapters must explicitly supply
+the configured catalog and selected names.
 
 ## API and source precedence
 
@@ -34,6 +35,9 @@ bodies in requested order, and loads nothing for an empty selection. Unknown or
 duplicate selections fail without returning partial results. Selection is not
 permission to execute instructions: integration must separately decide which
 content to place in context and apply its existing authorization rules.
+
+`SelectBounded(ctx, names, maxBytes)` additionally limits aggregate bytes read
+from selected files, including frontmatter; it returns no partial result.
 
 Bodies are loaded afresh on selection. Metadata or canonical-path changes since
 discovery require rediscovery; body edits with unchanged metadata are allowed.
@@ -96,3 +100,35 @@ writers, use a separate OS isolation boundary or immutable trusted snapshots.
 selection, malformed metadata, byte/count limits, lazy loading, metadata drift,
 symlink escape/retargeting, cancellation, and nonrecursive scope. It does not
 establish adversarial race resistance or validate external CLI integration.
+
+## Task-engine integration
+
+Pass the catalog through `tasks.Config.Skills`. `Engine.AvailableSkills()` lists
+metadata only. `Engine.StartWithSkills(ctx, taskID, prompt, names)` requires exact
+explicit names; ordinary `Start` and empty selections never load any skill. No
+catalog means nonempty selections fail. No automatic name matching occurs.
+
+The original prompt is retained verbatim at the beginning of the user message.
+Selected instructions and their name, source, canonical path, and description
+are appended as JSON references, explicitly labeled untrusted content rather
+than system policy or execution permission. They never become system/developer
+messages, tools, approval decisions, or shared runner configuration. This
+labeling is not a prompt-injection security boundary. Existing independent tool
+approval enforcement still applies.
+
+The exact selected snapshot becomes part of that task's persisted user message.
+It can remain visible to the model as ordinary history on later turns; selecting
+a skill does not globally activate it or load it again on later turns. Other
+tasks cannot inherit this context via a shared runner template. Explicitly
+select again to read updated instructions. Changes in name/description or
+canonical target still require catalog rediscovery.
+
+The raw files selected for a turn must fit the remaining `MaxPromptBytes`
+budget, and the final encoded prompt including provenance must also fit. Invalid,
+missing, duplicate, oversized, or changed skills fail before creating a run or
+saving any user message. The existing context budget still governs the overall
+model request, independently of this per-turn byte limit.
+
+Task tests cover explicit loading, preserved original prompt/provenance,
+persisted snapshots, no cross-task or shared-template leakage, no automatic
+reload, disabled configuration, invalid selection, and combined byte limits.

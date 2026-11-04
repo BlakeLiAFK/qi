@@ -12,6 +12,7 @@ import (
 
 	"gopi/internal/agent"
 	"gopi/internal/session"
+	"gopi/internal/skills"
 )
 
 var ErrBusy = errors.New("task already has an active turn")
@@ -48,6 +49,8 @@ type Task struct {
 	Cards     []Card          `json:"cards"`
 }
 type Config struct {
+	Skills         *skills.Catalog
+	MCP            []MCPServer
 	Coding         *CodingConfig
 	Factory        func(taskID string) (*agent.Agent, error)
 	MaxTasks       int
@@ -92,6 +95,10 @@ func New(ctx context.Context, s *session.Store, cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	cfg.Coding = coding
+	cfg.MCP, err = prepareMCP(cfg.MCP)
+	if err != nil {
+		return nil, err
+	}
 	release, err := s.AcquireEngineLock()
 	if err != nil {
 		return nil, err
@@ -287,6 +294,11 @@ func (e *Engine) execute(ctx context.Context, id string, run Run, runner *agent.
 	copyRunner := *runner
 	if e.cfg.Coding != nil {
 		copyRunner.Tools = append(append([]agent.Tool(nil), runner.Tools...), codingTool{engine: e, taskID: id, runID: run.ID, config: e.cfg.Coding})
+	}
+	for _, server := range e.cfg.MCP {
+		for _, tool := range server.Tools {
+			copyRunner.Tools = append(append([]agent.Tool(nil), copyRunner.Tools...), mcpTool{engine: e, taskID: id, runID: run.ID, server: server, tool: tool})
+		}
 	}
 	var persistErr error
 	original := copyRunner.OnEvent

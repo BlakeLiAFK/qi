@@ -37,26 +37,46 @@ type response struct {
 	} `json:"error"`
 }
 type Client struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	mu      sync.Mutex
-	next    uint64
-	pending map[uint64]chan response
-	done    chan struct{}
-	once    sync.Once
-	writeMu sync.Mutex
-	timeout time.Duration
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	mu        sync.Mutex
+	next      uint64
+	pending   map[uint64]chan response
+	done      chan struct{}
+	once      sync.Once
+	writeMu   sync.Mutex
+	timeout   time.Duration
+	reaped    chan struct{}
+	closeOnce sync.Once
 }
 
 // Start performs MCP initialization; ctx controls startup, not server lifetime.
 func Start(ctx context.Context, cfg Config) (*Client, error) {
+	return start(ctx, cfg, pluginEnvironment(cfg.Env), func() {}, false)
+}
+
+func start(ctx context.Context, cfg Config, env []string, cleanup func(), quiet bool) (*Client, error) {
+	started := false
+	defer func() {
+		if !started {
+			cleanup()
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if cfg.Command == "" {
 		return nil, errors.New("plugin command is required")
 	}
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Dir = cfg.Dir
-	cmd.Env = pluginEnvironment(cfg.Env)
+	cmd.WaitDelay = 100 * time.Millisecond
+	cmd.Env = env
+	configureProcess(cmd)
 	cmd.Stderr = os.Stderr
+	if quiet {
+		cmd.Stderr = io.Discard
+	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -75,9 +95,10 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	c := &Client{cmd: cmd, stdin: in, pending: make(map[uint64]chan response), done: make(chan struct{}), timeout: timeout}
+	c := &Client{cmd: cmd, stdin: in, pending: make(map[uint64]chan response), done: make(chan struct{}), timeout: timeout, reaped: make(chan struct{})}
+	started = true
 	go c.read(out)
-	go func() { _ = cmd.Wait(); c.finish() }()
+	go func() { _ = cmd.Wait(); _ = killProcess(cmd); cleanup(); c.finish(); close(c.reaped) }()
 	_, err = c.request(ctx, "initialize", map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "gopi", "version": "0.1.0"}})
 	if err == nil {
 		sent := make(chan error, 1)
@@ -137,6 +158,7 @@ func (c *Client) read(r io.Reader) {
 		}
 	}
 	c.finish()
+	_ = killProcess(c.cmd)
 }
 func (c *Client) write(v any) error {
 	c.writeMu.Lock()
@@ -255,14 +277,13 @@ func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (j
 	return c.request(ctx, "tools/call", map[string]any{"name": name, "arguments": args})
 }
 func (c *Client) Close() error {
-	c.finish()
-	_ = c.stdin.Close()
-	if c.cmd.Process != nil {
-		err := c.cmd.Process.Kill()
-		if errors.Is(err, os.ErrProcessDone) {
-			return nil
+	c.closeOnce.Do(func() {
+		c.finish()
+		_ = c.stdin.Close()
+		if c.cmd.Process != nil {
+			_ = killProcess(c.cmd)
 		}
-		return err
-	}
+	})
+	<-c.reaped
 	return nil
 }

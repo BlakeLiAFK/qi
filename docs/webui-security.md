@@ -65,7 +65,8 @@ does not cancel other runs. Concurrent task execution and durable history are
 owned by the task engine. The interface does not itself constrain a model,
 plugin, worker process, filesystem access or network access. The optional coding
 adapter uses the approval boundary described below; OS isolation remains the
-operator's responsibility. MCP tools are not enabled in daemon tasks.
+operator's responsibility. MCP tools are disabled by default and require a separate
+explicit static capability configuration (see below).
 
 Before any public preview, test authentication, origin/host rejection, replayed
 cards, cancellation, concurrent tasks and restart recovery; verify TLS and proxy
@@ -114,15 +115,43 @@ and never launches the CLI again. It does not reconcile files or reattach orphan
 processes after an abrupt host failure. Inspect the workspace and running processes
 before authorizing another attempt. Cancelling or stopping qi is not rollback.
 
-## Coding execution approvals
+## Optional MCP execution
+
+`qi serve -mcp-tools /path/to/tools.json` opts into static operator-selected MCP
+capabilities. No process is started for discovery. Every call requires a fresh
+exact-action durable approval covering server executable, startup arguments,
+directory, tool name, tool arguments, runtime and an access warning. Startup itself
+can have side effects. A fresh process and disposable home are created for each
+approved call, never shared across tasks; the process group is stopped before
+releasing the workspace. MCP and coding jobs share the same per-process canonical
+workspace gate, acquired after approval and subject to expiry and cancellation.
+
+This initial slice supports Unix process groups only. It supplies no credentials
+or environment overrides, filters ambient application secrets, discards server
+stderr, and removes temporary home/config directories after exit. Keep secrets out
+of command arguments and tool configuration: approval payloads and tool results
+are persisted, and tool results are supplied to the task's model. Trusted servers
+still have same-user host filesystem and network access. Processes can deliberately
+escape process groups; isolation requires a dedicated OS account/container.
+Executable paths are resolved at startup but executable contents are not pinned:
+a same-user change after approval is outside this boundary. Directory identity
+checks likewise do not eliminate filesystem races or constrain descendants.
+
+After startup, transport failures, timeouts, cancellation and MCP error results
+are conservatively recorded as unknown outcomes; no automatic replay occurs.
+Restart recovery never replays calls or resumes server processes. Inspect external
+state before approving a retry. Do not use credentialed or tool-enabled public
+previews without separately reviewing OS isolation, authorization and deployment.
+
+## Execution approvals
 
 Informational task cards and execution approvals use separate routes. The Web UI
 polls `GET /api/tasks/{id}/approvals` and displays each approval's complete action
 payload, target, expiry, revision and digest. Explicit Allow/Deny submits only
 `{id, revision, digest, allow}` to `POST /api/tasks/{id}/approvals`. Missing decisions
 or digests are rejected. The engine verifies current state and action binding;
-replays or expired/stale decisions return conflict. The coding execution adapter,
-not the UI card renderer, claims an approved action before dispatch.
+replays or expired/stale decisions return conflict. The coding and MCP execution adapters,
+not the UI card renderer, claim an approved action before dispatch.
 
 Tests: `go test -race ./internal/webui` and
 `node --test internal/webui/app_test.cjs`. Node tests verify DOM behavior with a
