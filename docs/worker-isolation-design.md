@@ -1,6 +1,6 @@
 # Worker isolation design
 
-**Status: proposed and unimplemented.** This document is a design recommendation, not a claim that qi currently enforces these controls. No deployment or host configuration changes are part of this document.
+**Status: proposed, with a library-only policy/supervisor prototype.** The runnable isolation backend remains unimplemented. This document is a design recommendation, not a claim that qi currently enforces these controls. No deployment or host configuration changes are part of this document. See [prototype scope and remaining prerequisites](worker-isolation-prototype.md); its tests use a fake runtime and do not verify actual containment.
 
 ## Decision
 
