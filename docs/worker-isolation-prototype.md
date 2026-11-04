@@ -86,3 +86,31 @@ See [the isolation design](worker-isolation-design.md) for the threat model and
 release-blocking end-to-end tests. Public execution must stay disabled until the
 production adapter, authorization transport, gateway and actual containment
 checks are implemented and verified.
+
+## Read-only host preflight
+
+Run `qi isolation-preflight` to print a JSON report. It exits nonzero while
+containment cannot be verified (currently always), so it cannot silently serve
+as an enablement gate. `-h` prints help without probing. It needs no model
+configuration, API key, database or running daemon. The command has no install,
+repair or enable option.
+
+The `isolation.Preflight` / injectable `InspectHost` API uses only bounded reads
+of fixed kernel files and executable metadata in `/usr/bin`, `/usr/local/bin`
+and `/bin`. It never executes a discovered binary, opens a runtime socket,
+creates a namespace, starts a container, reads application credentials or changes
+host configuration. It does not search user-controlled PATH or home directories.
+
+Each check reports `verified`, `unavailable`, or `unknown` with its precise scope.
+For example, a visible executable verifies only its metadata, not provenance,
+rootless support or usability. Visible cgroup controllers do not verify delegation
+or effective enforcement; nonzero namespace sysctls do not prove namespace creation
+is permitted. Missing kernel files describe this process's visible view, not
+necessarily the administrator's host. Permission/read errors are unknown rather
+than proof of absence. Custom runtime installation paths are not searched.
+
+Every effective isolation category remains unknown until tested by a trusted
+runtime adapter. The missing production adapter and model gateway are explicitly
+unavailable, `ready` and `isolation_verified` remain false, and public-preview
+workers remain disabled. Bubblewrap or user-namespace availability alone cannot
+satisfy this policy, especially without cgroup and disk-quota enforcement.

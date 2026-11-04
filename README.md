@@ -4,6 +4,10 @@ A small Go assistant with a persistent task WebUI and OpenAI-compatible or nativ
 explicitly configured MCP stdio plugins, and optional Codex/Claude coding workers.
 This is an early implementation, not feature parity with Pi or a production sandbox.
 
+`qi isolation-preflight` prints a read-only JSON prerequisite report and exits
+nonzero when isolation is not verified (currently always). It does not install or
+enable workers. See [the prototype and remaining Linux prerequisites](docs/worker-isolation-prototype.md).
+
 ## Run
 
 Requires Go 1.22+ and access to an OpenAI-compatible Chat Completions API or
