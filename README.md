@@ -1,5 +1,113 @@
 # qi
 
-qi 是一个正在开发的 Go 个人 Agent 系统，参考 Pi 的小核心和可扩展设计。
+A small Go command-line assistant with an OpenAI-compatible model/tool loop,
+explicitly configured MCP stdio plugins, and optional Codex/Claude coding workers.
+This is an early implementation, not feature parity with Pi or a production sandbox.
 
-计划支持模型工具循环、插件、权限控制，以及按需调用 Codex 和 Claude Code。项目目前处于开发初期，功能与测试状态将在实现时逐项更新。
+## Run
+
+Requires Go 1.22+ and access to an OpenAI-compatible Chat Completions API.
+
+```sh
+go build -o qi ./cmd/qi
+export OPENAI_MODEL='your-model'
+export OPENAI_API_KEY='your-key'
+# Optional for another compatible provider:
+# export OPENAI_BASE_URL='http://localhost:8080/v1'
+./qi -p 'Explain this project in one paragraph'
+./qi
+```
+
+Interactive mode accepts one line per turn and `/quit` to exit. Conversation history
+is retained only in memory until exit. One-shot `-p` prints the final assistant text.
+Responses are buffered, not token-streamed. No SQLite storage, sessions on disk,
+automatic retries, context compaction, scheduling, or TUI is implemented.
+`-model` and `-base-url` override their environment variables. The API key may be
+omitted for compatible local servers. The model name must be explicitly supplied.
+Run `./qi -h` for flags. Diagnostics and permission prompts use stderr; answers use stdout.
+
+## MCP plugins
+
+Create a trusted JSON configuration file:
+
+```json
+[
+  {
+    "name": "example",
+    "command": "/absolute/path/to/trusted-mcp-server",
+    "args": [],
+    "env": ["EXAMPLE_SETTING=value"],
+    "dir": "/path/to/workspace"
+  }
+]
+```
+
+```sh
+./qi -plugins ./plugins.json
+```
+
+Passing `-plugins` explicitly authorizes starting those programs. No configuration
+is auto-discovered. Servers inherit the qi process environment (including secrets)
+and run with the user's privileges. Review commands before enabling them. Startup
+can have side effects before any tool approval. Only newline-delimited MCP stdio
+is supported, with initialization and paginated tool discovery. Tool names are
+prefixed `example__` to avoid collisions. Relative command paths and working
+directories resolve from qi's current working directory, not the config file.
+
+Each tool invocation displays its name and JSON arguments and requires entering
+`y`. Empty input, EOF, and other answers deny the call. Use `-yes-tools` only to
+explicitly authorize *all* model-requested tool calls for that session. Plugin
+code is not sandboxed; confirmations are a call gate, not protection against a
+malicious server. Plugin descriptions and tool results also reach the model.
+
+## Optional coding workers
+
+```sh
+./qi -enable-workers -work-dir /path/to/repo
+```
+
+This exposes `coding_start`, `coding_status`, and `coding_cancel`. Install and
+configure the official `codex` and/or `claude` CLI separately. qi does not install
+them, provide credentials, or verify CLI version compatibility. The model chooses
+`codex` or `claude` and the prompt, but cannot choose a different working directory.
+Current invocations are:
+
+- `codex exec --sandbox workspace-write -- <prompt>`
+- `claude --bare -p --output-format text -- <prompt>`
+
+Workers inherit the process environment. They can edit files and may access the
+network under their own CLI permissions. A fixed working directory is **not** a
+security boundary. qi does not bypass their permission controls or approval prompts;
+commands that need interactive input may fail in this noninteractive mode.
+
+Worker starts return task IDs. Status reads return up to 64 KiB of combined output
+and a truncation flag. Runtime defaults to 15 minutes (`-worker-timeout` changes it).
+Up to 100 tasks are retained per process. Tasks and their output are in memory only;
+all active workers are cancelled when qi exits, including after a one-shot answer.
+For work that needs multiple follow-up prompts, use interactive mode. There is no
+automatic background polling or guarantee that a model waits for task completion.
+
+## Development
+
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+Tests use local HTTP fixtures and fake processes; they do not need API credentials.
+The CLI tests cover one-shot and multi-turn HTTP requests, opt-in permissions,
+configuration validation, and rejecting model-selected worker paths. The internal
+packages contain focused agent, transport, MCP, and worker lifecycle tests.
+
+## Boundaries
+
+- Prompts, history, tool definitions, and results are transmitted to the configured
+  model endpoint. Only use providers and plugins you trust with those contents.
+- No tools are enabled by default. Plain chat cannot read or modify local files.
+- Tool approvals are terminal input, not an authenticated multi-user permission
+  system. Do not feed untrusted input into the approval stream.
+- `-max-steps` bounds model calls per turn (default 20). Tool errors are returned to
+  the model; model errors and exhausted limits end the session with a nonzero exit.
+- Ctrl-C cancels model requests and shuts down workers/plugins. Local terminal input
+  is blocking; cancellation while waiting for a line may require Enter or terminal exit.
