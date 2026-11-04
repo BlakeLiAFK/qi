@@ -584,3 +584,12 @@ Run audit snapshots remain available after source deletion; model replies may
 quote facts into ordinary conversation history. Do not save credentials or
 sensitive personal information. Records are plaintext; deletion removes live
 curated revisions, not run snapshots, backups or SQLite remnants. See [boundaries and API](docs/explicit-memory.md).
+
+### Inspect registered plugins and tools
+
+The authenticated WebUI’s **Plugins & tools** link opens a read-only catalog of
+this daemon’s built-ins and static MCP registrations, including enabled/disabled
+state, declared capabilities, configuration source, and sandbox limitations.
+It never launches plugins. Changes remain operator-managed startup configuration
+and require a restart; there are no WebUI installation, credential, or enablement
+controls. See [the plugin catalog guide](docs/plugin-catalog.md).

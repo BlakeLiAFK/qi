@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>qi · Plugins &amp; tools</title><link rel="stylesheet" href="/style.css"><script src="/plugins.js" defer></script></head>
+<body class="memory-page"><aside><a class="brand" href="/">qi</a><p>Plugins &amp; tools</p><a href="/">Back to tasks</a><a href="/memory">Saved memory</a></aside><main>
+<header><h1>Plugins &amp; tools</h1></header>
+<p>Read-only catalog of this daemon’s startup configuration. Enabled means registered for task use, not running, connected, healthy, or approved for an action. Inspecting this page never starts a plugin.</p>
+<p>To change registrations, the operator must review the trusted local configuration and restart qi. No installation, enable/disable controls, credential entry, automatic discovery, or health checks are available here. Standalone CLI plugins and custom factory tools are not listed. Skills are separate instructions, selected per message, not executable plugins.</p>
+<p>Local MCP servers and coding workers are <strong>not OS-sandboxed</strong> and are forbidden in public preview. Each approved launch may have side effects. Do not use untrusted executables.</p>
+<p id="plugins-error" role="alert" hidden></p><button id="plugins-reload" type="button">Reload catalog</button>
+<section id="plugins-protected" hidden><p id="plugins-status" aria-live="polite"></p><section id="plugins-builtins" aria-label="Built-in capabilities"></section><section id="plugins-mcp" aria-label="MCP registrations"></section></section>
+</main></body></html>
