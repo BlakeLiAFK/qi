@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"gopi/internal/testutil"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +41,7 @@ func TestDaemonPersistsIsolatedTasks(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": "reply: " + first}}}})
 	}))
 	defer provider.Close()
-	cfg := daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: "http://127.0.0.1:8686", token: testToken, maxSteps: 3}
+	cfg := daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: "http://127.0.0.1:8686", token: testToken, maxSteps: 3}
 	handler, closeAll, err := openDaemon(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +173,7 @@ func TestServeShutsDown(t *testing.T) {
 		return ""
 	}
 	go func() {
-		done <- runServer(ctx, []string{"-listen", "127.0.0.1:0", "-db", filepath.Join(t.TempDir(), "tasks.db"), "-model", "fixture"}, readyWriter{&output, ready}, env)
+		done <- runServer(ctx, []string{"-listen", "127.0.0.1:0", "-db", filepath.Join(testutil.PrivateDir(t), "tasks.db"), "-model", "fixture"}, readyWriter{&output, ready}, env)
 	}()
 	select {
 	case <-ready:
@@ -201,8 +202,8 @@ func TestServeShutsDown(t *testing.T) {
 func TestServerCodingRequiresExplicitWorkspace(t *testing.T) {
 	for _, args := range [][]string{
 		{"-enable-workers"},
-		{"-work-dir", t.TempDir()},
-		{"-enable-workers", "-work-dir", t.TempDir(), "-worker-timeout", "2h"},
+		{"-work-dir", testutil.PrivateDir(t)},
+		{"-enable-workers", "-work-dir", testutil.PrivateDir(t), "-worker-timeout", "2h"},
 	} {
 		var out bytes.Buffer
 		args = append(args, "-model", "fixture")

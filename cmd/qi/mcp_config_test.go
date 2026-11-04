@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"gopi/internal/testutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,7 +23,7 @@ func TestMCPToolsConfigStrictAndBounded(t *testing.T) {
 		`[{"name":"x","command":"test","dir":"/tmp","tools":[{"name":"a","inputSchema":{},"env":[]}]}]`,
 		`[{}] []`, strings.Repeat(" ", 1<<20) + `[{}]`,
 	} {
-		path := filepath.Join(t.TempDir(), "mcp.json")
+		path := filepath.Join(testutil.PrivateDir(t), "mcp.json")
 		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -35,7 +36,7 @@ func TestMCPToolsStartupValidationDoesNotExecute(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix executable fixture")
 	}
-	dir := t.TempDir()
+	dir := testutil.PrivateDir(t)
 	command := filepath.Join(dir, "fake-mcp")
 	if err := os.WriteFile(command, []byte("#!/bin/sh\ntouch was-started\n"), 0700); err != nil {
 		t.Fatal(err)

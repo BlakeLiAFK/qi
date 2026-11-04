@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"gopi/internal/testutil"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,7 +11,7 @@ import (
 
 func TestTaskMetadataDoesNotReadConversationPayloads(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "metadata.db"))
+	s, err := Open(filepath.Join(testutil.PrivateDir(t), "metadata.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

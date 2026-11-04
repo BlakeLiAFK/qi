@@ -5,7 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"gopi/internal/agent"
 	"gopi/internal/session"
+	"strings"
 )
 
 // Submit binds the client key to the original semantic request, not mutable
@@ -40,4 +43,32 @@ func (e *Engine) Submit(ctx context.Context, id, principal, key, prompt string, 
 		return prior, err
 	}
 	return e.startWithSkills(ctx, id, prompt, names, &identity)
+}
+
+// CreateIdempotent binds the client key to the normalized title. Callers supply
+// an authenticated, stable principal, not a token or user-supplied account ID.
+func (e *Engine) CreateIdempotent(ctx context.Context, principal, key, title string) (Task, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "New task"
+	}
+	if len(title) > 160 {
+		return Task{}, errors.New("title exceeds 160 bytes")
+	}
+	payload, _ := json.Marshal(struct {
+		Version int
+		Title   string
+	}{1, title})
+	digest := sha256.Sum256(payload)
+	identity := session.AdmissionIdentity{Principal: principal, Key: key, Digest: hex.EncodeToString(digest[:])}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return Task{}, ErrClosed
+	}
+	s, err := e.store.CreateIdempotent(ctx, title, identity, e.cfg.MaxTasks)
+	if err != nil {
+		return Task{}, err
+	}
+	return Task{ID: s.ID, Title: s.Title, Status: "idle", CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, Messages: []agent.Message{}, Runs: []Run{}, Cards: []Card{}}, nil
 }

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"gopi/internal/testutil"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func (q *completeBetweenReads) QueryContext(ctx context.Context, query string, a
 
 func TestTaskSnapshotCompletionBetweenHistoryAndStatus(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "snapshot.db")
+	path := filepath.Join(testutil.PrivateDir(t), "snapshot.db")
 	reader, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +110,7 @@ func TestTaskSnapshotCompletionBetweenHistoryAndStatus(t *testing.T) {
 }
 
 func TestTaskSnapshotMissingAndCanceled(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "missing.db"))
+	s, err := Open(filepath.Join(testutil.PrivateDir(t), "missing.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

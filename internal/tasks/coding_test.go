@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"gopi/internal/testutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,12 +21,12 @@ func codingFixture(t *testing.T, body string, ttl time.Duration) (*Engine, *sess
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX fake CLI")
 	}
-	workspace := t.TempDir()
-	executable := filepath.Join(t.TempDir(), "fake-codex")
+	workspace := testutil.PrivateDir(t)
+	executable := filepath.Join(testutil.PrivateDir(t), "fake-codex")
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+body), 0700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := session.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	store, err := session.Open(filepath.Join(testutil.PrivateDir(t), "tasks.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,14 +208,14 @@ func TestCodingCancellationStopsProcessAndDoesNotReplay(t *testing.T) {
 }
 
 func TestCodingStrictArgumentsAndConfig(t *testing.T) {
-	if _, err := prepareCoding(&CodingConfig{Workspace: t.TempDir(), Timeout: 2 * time.Hour}); err == nil {
+	if _, err := prepareCoding(&CodingConfig{Workspace: testutil.PrivateDir(t), Timeout: 2 * time.Hour}); err == nil {
 		t.Fatal("unbounded runtime accepted")
 	}
 	if _, err := prepareCoding(&CodingConfig{}); err == nil {
 		t.Fatal("empty workspace accepted")
 	}
 	e, _ := fixture(t, func(string) (*agent.Agent, error) { return &agent.Agent{}, nil })
-	cfg, err := prepareCoding(&CodingConfig{Workspace: t.TempDir()})
+	cfg, err := prepareCoding(&CodingConfig{Workspace: testutil.PrivateDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

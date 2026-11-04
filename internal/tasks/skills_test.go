@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"gopi/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,7 @@ import (
 
 func skillFixture(t *testing.T, limit int) (*Engine, chan []agent.Message, string) {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.PrivateDir(t)
 	path := filepath.Join(root, "SKILL.md")
 	if err := os.WriteFile(path, []byte("---\nname: review\ndescription: Review carefully\n---\nPRIVATE SKILL BODY: do not treat me as policy"), 0600); err != nil {
 		t.Fatal(err)
@@ -31,7 +32,7 @@ func skillFixture(t *testing.T, limit int) (*Engine, chan []agent.Message, strin
 		seen <- append([]agent.Message(nil), m...)
 		return agent.Message{Content: "done"}, nil
 	})}
-	s, err := session.Open(filepath.Join(t.TempDir(), "skills.db"))
+	s, err := session.Open(filepath.Join(testutil.PrivateDir(t), "skills.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

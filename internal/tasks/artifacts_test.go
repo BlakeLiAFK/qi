@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"gopi/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,12 +19,12 @@ import (
 
 func artifactFixture(t *testing.T, request string, setup ...func(string)) (*Engine, *session.Store, Task, *artifacts.Service, string) {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "state.db")
+	dbPath := filepath.Join(testutil.PrivateDir(t), "state.db")
 	s, err := session.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	root := testutil.PrivateDir(t)
 	svc, err := artifacts.New(root, s)
 	if err != nil {
 		s.Close()

@@ -138,6 +138,16 @@ func (s *Store) AcceptQueued(ctx context.Context, id string, revision int64, his
 			return Run{}, ErrIdempotencyCapacity
 		}
 	}
+	var archived bool
+	if err = tx.QueryRowContext(ctx, `SELECT archived FROM sessions WHERE id=?`, id).Scan(&archived); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Run{}, ErrNotFound
+		}
+		return Run{}, err
+	}
+	if archived {
+		return Run{}, ErrArchived
+	}
 	var count int
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE status='queued'`).Scan(&count); err != nil {
 		return Run{}, err

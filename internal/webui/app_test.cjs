@@ -224,3 +224,68 @@ test('logout clears question/composer/submission drafts and cached task snapshot
  assert.equal(vm.runInContext('version',context),'');assert.equal(nodes.get('conversation').children.length,0);assert.equal(nodes.get('skills').children.length,0);
  input.value='Late detached input';input.oninput();assert.equal(vm.runInContext('questionDrafts.size',context),0,'late input cannot restore secret draft');
 });
+
+function browserStorage(){const data=new Map();return {get length(){return data.size;},key:i=>Array.from(data.keys())[i]||null,getItem:k=>data.get(k)||null,setItem:(k,v)=>data.set(k,String(v)),removeItem:k=>data.delete(k)};}
+function creationServer({loseCreate=0,loseMessage=0}={}){
+ const creations=[],messages=[],tasks=new Map(),runs=new Set();
+ async function fetch(path,opts){
+  if(path==='/api/tasks'&&opts.method==='POST'){
+   const body=JSON.parse(opts.body);creations.push(body);assert.ok(body.idempotency_key,'task creation needs stable key');
+   if(!tasks.has(body.idempotency_key))tasks.set(body.idempotency_key,{id:'created-'+tasks.size,title:body.title,status:'idle',messages:[],cards:[],runs:[]});
+   if(loseCreate-->0)throw new Error('Creation reply lost');
+   return {ok:true,json:async()=>tasks.get(body.idempotency_key)};
+  }
+  if(path.endsWith('/messages')&&opts.method==='POST'){
+   const body=JSON.parse(opts.body);messages.push({path,body});runs.add(path+'|'+body.idempotency_key);
+   if(loseMessage-->0)throw new Error('Message reply lost');return {ok:true,json:async()=>({accepted:true})};
+  }
+  return {ok:true,json:async()=>path==='/api/auth'?{session_auth:false}:path==='/api/tasks'?Array.from(tasks.values()):path==='/api/skills'||path.endsWith('/approvals')||path.endsWith('/artifacts')?[]:Array.from(tasks.values()).find(t=>path==='/api/tasks/'+t.id)};
+ }
+ return {fetch,creations,messages,tasks,runs};
+}
+test('lost task-creation response waits for explicit retry and reuses one stable key',async()=>{
+ const server=creationServer({loseCreate:1});const {context,nodes}=setup();await new Promise(setImmediate);context.fetch=server.fetch;context.sessionStorage=browserStorage();
+ const prompt=context.document.getElementById('prompt');prompt.value='Create exactly one task';
+ await nodes.get('composer').onsubmit({preventDefault(){}});assert.equal(server.creations.length,1);assert.equal(server.messages.length,0);assert.equal(server.tasks.size,1);
+ await nodes.get('composer').onsubmit({preventDefault(){}});assert.equal(server.creations.length,2);assert.equal(server.creations[0].idempotency_key,server.creations[1].idempotency_key);assert.equal(server.tasks.size,1);assert.equal(server.runs.size,1);
+ nodes.get('new-task').onclick();await new Promise(setImmediate);prompt.value='Create exactly one task';await nodes.get('composer').onsubmit({preventDefault(){}});assert.equal(server.tasks.size,2,'accepted completion must permit intentional new task');
+});
+test('creation identity and first-message identity survive reload after uncertain message acceptance',async()=>{
+ const server=creationServer({loseMessage:1}),storage=browserStorage();const first=setup();await new Promise(setImmediate);first.context.fetch=server.fetch;first.context.sessionStorage=storage;first.context.document.getElementById('prompt').value='Same explicit request';
+ await first.nodes.get('composer').onsubmit({preventDefault(){}});assert.equal(server.creations.length,1);assert.equal(server.messages.length,1);assert.equal(server.runs.size,1);
+ const second=setup();await new Promise(setImmediate);second.context.fetch=server.fetch;second.context.sessionStorage=storage;second.context.document.getElementById('prompt').value='Same explicit request';
+ await second.nodes.get('composer').onsubmit({preventDefault(){}});assert.equal(server.tasks.size,1);assert.equal(server.creations[0].idempotency_key,server.creations[1].idempotency_key);assert.equal(server.messages[0].body.idempotency_key,server.messages[1].body.idempotency_key);assert.equal(server.runs.size,1,'lost acceptance must not execute a second run');
+});
+test('changed new-task content does not reuse an uncertain key merely because title matches',async()=>{
+ const server=creationServer({loseCreate:1});const {context,nodes}=setup();await new Promise(setImmediate);context.fetch=server.fetch;context.sessionStorage=browserStorage();const prefix='x'.repeat(40);context.document.getElementById('prompt').value=prefix+' first';
+ await nodes.get('composer').onsubmit({preventDefault(){}});context.document.getElementById('prompt').value=prefix+' different';await nodes.get('composer').onsubmit({preventDefault(){}});
+ assert.equal(server.creations[0].title,server.creations[1].title);assert.notEqual(server.creations[0].idempotency_key,server.creations[1].idempotency_key);
+});
+
+test('creation record is task-bound, full-request-bound and cleared on logout',()=>{
+ const {context}=setup();const storage=browserStorage();context.sessionStorage=storage;
+ const key=context.submissionKey('__create__','same prompt',['review']);context.bindCreation('A');context.clearCreationFor('B');assert.equal(context.creationRecord().key,key);
+ const changed=context.submissionKey('__create__','same prompt',[]);assert.notEqual(changed,key);context.bindCreation('A');context.clearCreationFor('A');assert.equal(context.creationRecord(),null);
+ context.submissionKey('__create__','private draft',[]);context.bindCreation('C');context.finishSignOut();assert.equal(storage.getItem('qi-submission:__create__'),null);assert.equal(vm.runInContext('pendingSubmissions.size',context),0);
+});
+
+function archiveServer(task){const calls=[];return {calls,fetch:async(path,opts)=>{
+ calls.push({path,opts});if(path.endsWith('/archive')&&opts.method==='POST'){if(['running','queued'].includes(task.status))return {ok:false,status:409,text:async()=> 'active task'};task.archived=JSON.parse(opts.body).archived;return {ok:true,json:async()=>({archived:task.archived})};}
+ return {ok:true,json:async()=>path==='/api/tasks'?task.archived?[]:[task]:path==='/api/tasks?archived=true'?task.archived?[task]:[]:path.endsWith('/approvals')||path.endsWith('/artifacts')||path==='/api/skills'?[]:task};
+}};}
+test('archive and restore use explicit task scope, preserve draft, and disable archived sending',async()=>{
+ const task={id:'A',title:'Task A',status:'completed',archived:false,messages:[{role:'assistant',content:'Saved answer'}],cards:[],runs:[]};
+ const {context,nodes}=setup();await new Promise(setImmediate);const server=archiveServer(task);context.fetch=server.fetch;await context.refresh();nodes.get('tasks').children[0].onclick();await new Promise(setImmediate);
+ const prompt=context.document.getElementById('prompt');prompt.value='Draft belonging to A';await nodes.get('archive-task').onclick();
+ const action=server.calls.find(c=>c.path==='/api/tasks/A/archive');assert.deepEqual(JSON.parse(action.opts.body),{archived:true});assert.equal(nodes.get('archive-task').textContent,'Restore task');assert.equal(prompt.value,'Draft belonging to A');assert.equal(prompt.readOnly,true);assert.equal(nodes.get('send').disabled,true);assert.equal(nodes.get('show-archived').checked,true);
+ await nodes.get('composer').onsubmit({preventDefault(){}});assert.equal(server.calls.some(c=>c.path.endsWith('/messages')),false);
+ assert.ok(server.calls.some(c=>c.path==='/api/tasks?archived=true'));assert.ok(nodes.get('conversation').children.some(n=>n.className==='message assistant'));
+ await nodes.get('archive-task').onclick();assert.equal(task.archived,false);assert.equal(prompt.value,'Draft belonging to A');assert.equal(prompt.readOnly,false);assert.equal(nodes.get('show-archived').checked,false);
+ const posts=server.calls.filter(c=>c.opts.method==='POST');assert.equal(posts.length,2);assert.deepEqual(JSON.parse(posts[1].opts.body),{archived:false});
+});
+test('archive filter clears composer and preserves drafts without crossing tasks; active tasks cannot archive',async()=>{
+ const task={id:'A',title:'Task A',status:'running',archived:false,messages:[],cards:[],runs:[]};const {context,nodes}=setup();await new Promise(setImmediate);const server=archiveServer(task);context.fetch=server.fetch;await context.refresh();nodes.get('tasks').children[0].onclick();await new Promise(setImmediate);
+ const prompt=context.document.getElementById('prompt');prompt.value='A only';assert.equal(nodes.get('archive-task').disabled,true);await nodes.get('archive-task').onclick();assert.equal(server.calls.some(c=>c.path.endsWith('/archive')),false);
+ nodes.get('show-archived').checked=true;nodes.get('show-archived').onchange();await new Promise(setImmediate);assert.equal(prompt.value,'');assert.equal(nodes.get('tasks').children.length,0);
+ nodes.get('show-archived').checked=false;nodes.get('show-archived').onchange();await new Promise(setImmediate);nodes.get('tasks').children[0].onclick();await new Promise(setImmediate);assert.equal(prompt.value,'A only');
+});

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"gopi/internal/tasks"
+	"gopi/internal/testutil"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 )
 
 func TestPublicPreviewDaemonWiring(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tasks.db")
+	path := filepath.Join(testutil.PrivateDir(t), "tasks.db")
 	cfg := daemonConfig{database: path, origin: "http://127.0.0.1:8686", token: testToken, publicPreview: true}
 	if _, _, err := openDaemon(context.Background(), cfg); err == nil {
 		t.Fatal("cleartext preview accepted")
@@ -63,7 +64,7 @@ func TestPublicPreviewRejectsProcessToolsBeforeSideEffects(t *testing.T) {
 		}
 	}
 	for _, kind := range []string{"coding", "mcp"} {
-		path := filepath.Join(t.TempDir(), "must-not-create.db")
+		path := filepath.Join(testutil.PrivateDir(t), "must-not-create.db")
 		cfg := daemonConfig{database: path, origin: "https://qi.example", token: testToken, publicPreview: true}
 		if kind == "coding" {
 			cfg.coding = &tasks.CodingConfig{Workspace: "/must-not-inspect"}
@@ -82,11 +83,11 @@ func TestPublicPreviewRejectsProcessToolsBeforeSideEffects(t *testing.T) {
 	}
 }
 func TestPublicPreviewAllowsAuthenticatedArtifactsAndQuestions(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
+	root, err := filepath.EvalSymlinks(testutil.PrivateDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), origin: "https://qi.example", token: testToken, publicPreview: true, artifactDir: root, questions: true}
+	cfg := daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), origin: "https://qi.example", token: testToken, publicPreview: true, artifactDir: root, questions: true}
 	h, closeAll, err := openDaemon(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"errors"
+	"gopi/internal/testutil"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,7 +21,7 @@ func (f modelFunc) Complete(ctx context.Context, m []agent.Message, t []agent.To
 }
 func fixture(t *testing.T, f func(string) (*agent.Agent, error)) (*Engine, *session.Store) {
 	t.Helper()
-	s, err := session.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	s, err := session.Open(filepath.Join(testutil.PrivateDir(t), "tasks.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

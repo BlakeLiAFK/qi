@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"gopi/internal/artifacts"
 	"gopi/internal/session"
+	"gopi/internal/testutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,8 +15,8 @@ import (
 
 func TestRegistrationBoundariesAndPersistence(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	db := filepath.Join(t.TempDir(), "state.db")
+	root := testutil.PrivateDir(t)
+	db := filepath.Join(testutil.PrivateDir(t), "state.db")
 	store, err := session.Open(db)
 	if err != nil {
 		t.Fatal(err)
@@ -93,13 +94,13 @@ func TestRegistrationBoundariesAndPersistence(t *testing.T) {
 	}
 }
 func TestSymlinkRootRejected(t *testing.T) {
-	root := t.TempDir()
-	db, err := session.Open(filepath.Join(t.TempDir(), "state.db"))
+	root := testutil.PrivateDir(t)
+	db, err := session.Open(filepath.Join(testutil.PrivateDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	link := filepath.Join(t.TempDir(), "link")
+	link := filepath.Join(testutil.PrivateDir(t), "link")
 	os.Symlink(root, link)
 	if _, err = artifacts.New(link, db); err == nil {
 		t.Fatal("symlink root accepted")
@@ -108,8 +109,8 @@ func TestSymlinkRootRejected(t *testing.T) {
 
 func TestHardlinkedFileRejectedAtRegistrationAndDownload(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	store, err := session.Open(filepath.Join(t.TempDir(), "db"))
+	root := testutil.PrivateDir(t)
+	store, err := session.Open(filepath.Join(testutil.PrivateDir(t), "db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestHardlinkedFileRejectedAtRegistrationAndDownload(t *testing.T) {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	original := filepath.Join(t.TempDir(), "secret")
+	original := filepath.Join(testutil.PrivateDir(t), "secret")
 	if err := os.WriteFile(original, []byte("private"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestHardlinkedFileRejectedAtRegistrationAndDownload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Link(file, filepath.Join(t.TempDir(), "second")); err != nil {
+	if err := os.Link(file, filepath.Join(testutil.PrivateDir(t), "second")); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.Download(ctx, task.ID, a.ID); err == nil {
@@ -154,8 +155,8 @@ func TestHardlinkedFileRejectedAtRegistrationAndDownload(t *testing.T) {
 
 func TestRegistrationDeduplicatesAndEnforcesQuota(t *testing.T) {
 	ctx := context.Background()
-	root := t.TempDir()
-	store, err := session.Open(filepath.Join(t.TempDir(), "db"))
+	root := testutil.PrivateDir(t)
+	store, err := session.Open(filepath.Join(testutil.PrivateDir(t), "db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +223,7 @@ func TestGlobalReadConcurrencyLimit(t *testing.T) {
 
 func TestConcurrentRegistryLastSlotIsAtomic(t *testing.T) {
 	ctx := context.Background()
-	store, err := session.Open(filepath.Join(t.TempDir(), "db"))
+	store, err := session.Open(filepath.Join(testutil.PrivateDir(t), "db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +262,7 @@ func TestConcurrentRegistryLastSlotIsAtomic(t *testing.T) {
 
 func TestVerifiedRegistrationBindsSnapshot(t *testing.T) {
 	ctx := context.Background()
-	store, err := session.Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := session.Open(filepath.Join(testutil.PrivateDir(t), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +271,7 @@ func TestVerifiedRegistrationBindsSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	root := testutil.PrivateDir(t)
 	dir := filepath.Join(root, task.ID)
 	if err = os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)

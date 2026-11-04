@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"database/sql"
+	"gopi/internal/testutil"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,7 +15,7 @@ import (
 
 func TestQueueCancellationAfterDispatcherFailure(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "queue.db")
+	path := filepath.Join(testutil.PrivateDir(t), "queue.db")
 	s, err := session.Open(path)
 	if err != nil {
 		t.Fatal(err)

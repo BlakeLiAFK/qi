@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"gopi/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,12 +76,12 @@ func TestMCPTaskHelper(t *testing.T) {
 }
 func mcpFixture(t *testing.T, args string, ttl, timeLimit time.Duration) (*Engine, *session.Store, Task, string) {
 	t.Helper()
-	marker := filepath.Join(t.TempDir(), "started")
-	s, err := session.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	marker := filepath.Join(testutil.PrivateDir(t), "started")
+	s, err := session.Open(filepath.Join(testutil.PrivateDir(t), "tasks.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := MCPServer{Name: "local", Command: os.Args[0], Args: []string{"-test.run=TestMCPTaskHelper", "--", "qi-mcp-test", marker}, Dir: t.TempDir(), ApprovalTTL: ttl, Timeout: timeLimit, Tools: []plugins.Tool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
+	config := MCPServer{Name: "local", Command: os.Args[0], Args: []string{"-test.run=TestMCPTaskHelper", "--", "qi-mcp-test", marker}, Dir: testutil.PrivateDir(t), ApprovalTTL: ttl, Timeout: timeLimit, Tools: []plugins.Tool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
 	e, err := New(context.Background(), s, Config{MCP: []MCPServer{config}, Factory: func(string) (*agent.Agent, error) {
 		return &agent.Agent{Model: modelFunc(func(_ context.Context, m []agent.Message, defs []agent.ToolDefinition) (agent.Message, error) {
 			if len(defs) != 1 || defs[0].Name != "mcp_local__echo" {
@@ -232,7 +233,7 @@ func TestMCPUnknownOutcomesNotReplayed(t *testing.T) {
 	}
 }
 func TestMCPConfigIsCopiedAndCapabilitiesValidated(t *testing.T) {
-	s := MCPServer{Name: "local", Command: os.Args[0], Dir: t.TempDir(), Args: []string{"first"}, Tools: []plugins.Tool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
+	s := MCPServer{Name: "local", Command: os.Args[0], Dir: testutil.PrivateDir(t), Args: []string{"first"}, Tools: []plugins.Tool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
 	got, err := prepareMCP([]MCPServer{s})
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +243,7 @@ func TestMCPConfigIsCopiedAndCapabilitiesValidated(t *testing.T) {
 	if got[0].Args[0] != "first" || strings.Contains(string(got[0].Tools[0].InputSchema), "X") {
 		t.Fatal("config mutable")
 	}
-	for _, bad := range []MCPServer{{Name: "bad-name"}, {Name: "x", Command: os.Args[0], Dir: t.TempDir()}, {Name: "x", Command: os.Args[0], Dir: t.TempDir(), Tools: []plugins.Tool{{Name: "x", InputSchema: json.RawMessage(`[]`)}}}} {
+	for _, bad := range []MCPServer{{Name: "bad-name"}, {Name: "x", Command: os.Args[0], Dir: testutil.PrivateDir(t)}, {Name: "x", Command: os.Args[0], Dir: testutil.PrivateDir(t), Tools: []plugins.Tool{{Name: "x", InputSchema: json.RawMessage(`[]`)}}}} {
 		if _, err := prepareMCP([]MCPServer{bad}); err == nil {
 			t.Fatal("bad capability accepted")
 		}
@@ -285,7 +286,7 @@ func TestMCPCancelRunningCallCleansHomeAndDoesNotReplay(t *testing.T) {
 }
 
 func TestMCPAndCodingShareWorkspaceGate(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.PrivateDir(t)
 	coding, err := prepareCoding(&CodingConfig{Workspace: dir, CodexPath: os.Args[0]})
 	if err != nil {
 		t.Fatal(err)
@@ -369,7 +370,7 @@ func TestMCPConcurrentCallsSerializeWorkspace(t *testing.T) {
 }
 
 func TestMCPExposedNameCollisionsRejected(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.PrivateDir(t)
 	_, err := prepareMCP([]MCPServer{
 		{Name: "a", Command: os.Args[0], Dir: dir, Tools: []plugins.Tool{{Name: "b__c", InputSchema: json.RawMessage(`{"type":"object"}`)}}},
 		{Name: "a__b", Command: os.Args[0], Dir: dir, Tools: []plugins.Tool{{Name: "c", InputSchema: json.RawMessage(`{"type":"object"}`)}}},

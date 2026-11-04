@@ -36,6 +36,8 @@ type Event = StoredEvent
 
 func (s *Store) initTasks() error {
 	for _, query := range []string{
+		`CREATE TABLE IF NOT EXISTS task_archive_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), archived INTEGER NOT NULL CHECK(archived IN (0,1)), created_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS task_creation_keys (principal TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id), created_session TEXT NOT NULL, PRIMARY KEY(principal,key))`,
 		`CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), status TEXT NOT NULL CHECK(status IN ('running','completed','failed','cancelled','interrupted')), error TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, finished_at TEXT NOT NULL DEFAULT '', UNIQUE(id,session_id))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS one_running_per_session ON runs(session_id) WHERE status='running'`,
 		`CREATE INDEX IF NOT EXISTS runs_by_session ON runs(session_id,started_at)`,
@@ -58,7 +60,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string) (Run, error) {
 	}
 	run := Run{ID: hex.EncodeToString(id[:]), SessionID: sessionID, Status: "running", StartedAt: time.Now().UTC()}
 	// The partial unique index arbitrates concurrent process attempts atomically.
-	result, err := s.db.ExecContext(ctx, `INSERT INTO runs(id,session_id,status,started_at) SELECT ?,id,'running',? FROM sessions WHERE id=? ON CONFLICT DO NOTHING`, run.ID, run.StartedAt.Format(timestampFormat), sessionID)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO runs(id,session_id,status,started_at) SELECT ?,id,'running',? FROM sessions WHERE id=? AND archived=0 ON CONFLICT DO NOTHING`, run.ID, run.StartedAt.Format(timestampFormat), sessionID)
 	if err != nil {
 		return Run{}, err
 	}
@@ -67,8 +69,10 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string) (Run, error) {
 		return Run{}, err
 	}
 	if count == 0 {
-		if _, err := s.Get(ctx, sessionID); err != nil {
+		if item, err := s.Get(ctx, sessionID); err != nil {
 			return Run{}, err
+		} else if item.Archived {
+			return Run{}, ErrArchived
 		}
 		return Run{}, ErrRunActive
 	}

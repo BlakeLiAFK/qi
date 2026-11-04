@@ -95,9 +95,31 @@ run records, and events, with WAL and committed-write recovery. One engine owns 
 database at a time. After an unclean restart, abandoned runs become interrupted;
 work is not silently replayed. Queued turns also become interrupted on restart and
 require explicit resubmission after review. The default database is `qi/tasks.db` within the OS
-user config directory. Use `qi serve -db /private/path/tasks.db` to change it;
-the parent directory must already exist. Stored prompts and outputs are plaintext,
+user config directory. For this default, the OS configuration parent directory
+must already exist and pass the ancestor safety checks. qi validates it **before**
+creating only the final `qi` directory as mode 0700. An existing `qi` directory is
+validated without changing its mode or ownership. Unsafe ancestors are rejected
+without creating child directories. Use `qi serve -db /private/path/tasks.db` to
+change the database location; its private parent directory must already exist. Stored prompts and outputs are plaintext,
 not encrypted: keep the database, WAL, and backups private and outside your repository.
+
+Persistent storage currently supports Linux, macOS, and the BSD Unix variants
+covered by the permission checks. The dedicated data directory must belong to
+the current user with mode `0700` or stricter. Existing database, WAL, SHM,
+journal, and engine-lock files must be regular files owned by that user with
+mode `0600` or stricter and a single hard link. Unsafe existing paths are rejected
+without changing permissions or contents. Data-directory/file symlinks and
+untrusted writable ancestors are rejected; root-managed ancestor aliases such
+as macOS `/tmp` are supported. This is local Unix filesystem protection, not
+encryption, a distributed lock, or protection from another process using the
+same OS account. Review and relocate old data into a private directory yourself
+before retrying; qi does not silently chmod user data.
+
+**Windows persistent storage is currently unsupported:** database open fails
+closed until native ACL validation is implemented. A successful Windows
+cross-compilation does not imply runtime storage support. The same restriction
+applies to other platforms without implemented permission validation. See
+[storage privacy](docs/storage-privacy.md) for API and recovery details.
 
 The server has no tools enabled by default. Opt-in coding actions use durable,
 action-specific WebUI approval (see below). Static, approval-gated MCP tools can also be explicitly configured (see below). Informational cards do not execute work. Use `qi attach` to share daemon
@@ -141,6 +163,27 @@ Authenticated question cards and explicit-root deliverables may still be enabled
 with `-question-cards` and `-artifact-dir`. They retain their normal permission,
 storage-isolation, and non-execution boundaries. Authentication is still required
 for all protected task content and deliverables.
+
+## Archive and restore tasks
+
+Use **Archive task** to hide an idle or finished task from the default task list.
+Use **Show archived** to inspect retained tasks and **Restore task** to bring one
+back. Archiving is reversible, not deletion: conversation history, runs, audit
+records, deliverable registrations, and idempotency records remain on disk and
+accessible through the authenticated task view. Archive changes have their own
+transactional audit records. No permanent-deletion endpoint is provided.
+
+Queued or running tasks cannot be archived or restored. An archived task cannot
+start a new turn until restored; retrying a previously accepted idempotency key
+still returns its original acceptance without executing work again. Archived tasks
+continue to count toward the maximum retained-task capacity. Archiving does not
+free disk space or reset quotas.
+
+The authenticated API uses `POST /api/tasks/<id>/archive` with JSON
+`{"archived":true}` or `{"archived":false}` and the normal same-origin write
+headers. `GET /api/tasks` excludes archived tasks;
+`GET /api/tasks?archived=true` lists archived tasks only. Direct task history and
+registered-deliverable downloads remain authenticated and available.
 
 ## Task question cards
 

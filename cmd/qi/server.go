@@ -198,7 +198,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 			return err
 		}
 		dir = filepath.Join(dir, "qi")
-		if err = os.MkdirAll(dir, 0700); err != nil {
+		if err = session.EnsurePrivateDirectory(dir); err != nil {
 			return err
 		}
 		*db = filepath.Join(dir, "tasks.db")

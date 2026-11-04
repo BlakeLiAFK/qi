@@ -2,6 +2,7 @@
 const $=id=>document.getElementById(id);
 let skillControls=[];
 let sessionAuth=false, signingOut=false, loggedOut=false;
+let showArchived=false, selectedArchived=false, archiveBusy=false;
 // Unsent drafts stay in memory and are keyed by the task they belong to.
 const taskDrafts=new Map();
 let selected=null, busy=false, version='', refreshRunning=false, refreshAgain=false;
@@ -29,24 +30,24 @@ async function api(path,body){
 }
 function element(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function active(status){return ['running','queued','waiting_for_approval','waiting_for_input'].includes(status);}
-function paint(task){if(loggedOut)return;const signature=JSON.stringify(task)+JSON.stringify((task.approvals||[]).map(a=>Date.parse(a.expires_at)<=Date.now()))+JSON.stringify((task.cards||[]).map(c=>Date.parse(c.expires_at)<=Date.now()));$('send').disabled=busy||active(task.status);if(version===signature)return;version=signature;$('task-title').textContent=task.title;$('status').textContent=task.status;$('cancel').hidden=!active(task.status);$('send').disabled=busy||active(task.status);const panel=$('conversation');const nearBottom=panel.scrollHeight-panel.scrollTop-panel.clientHeight<100;panel.replaceChildren();paintContextNotice(task,panel);for(const msg of task.messages||[]){if(!['user','assistant','tool'].includes(msg.role))continue;const block=element('div',undefined,'message '+msg.role);block.append(element('small',msg.role==='assistant'?'QI':msg.role.toUpperCase()),element('div',msg.content||''));panel.append(block);}paintLiveText(task,panel);for(const run of task.runs||[]){if(run.error){const notice=element('section',undefined,'card');notice.append(element('h3','Run '+run.status),element('p',run.error));panel.append(notice);}}for(const card of task.cards||[]){if(card.kind==='question'){paintQuestion(task,card,panel);continue;}const block=element('section',undefined,'card');block.append(element('h3',card.title),element('p',card.summary),element('small',card.state));for(const action of card.actions||[]){const button=element('button',action.label);button.disabled=card.state!=='pending';button.onclick=async()=>{button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/actions',{card_id:card.id,action:action.id,revision:card.revision});await refresh();}catch(e){error(e);await refresh();}};block.append(button);}panel.append(block);}paintApprovals(task,panel);paintArtifacts(task,panel);if(nearBottom)panel.scrollTop=panel.scrollHeight;}
-async function refresh(){if(loggedOut||signingOut)return;if(refreshRunning){refreshAgain=true;return;}refreshRunning=true;watchTask(selected);try{const tasks=await api('/api/tasks');const nav=$('tasks');nav.replaceChildren();for(const task of tasks){const button=element('button',task.title,task.id===selected?'active':'');button.append(element('small',task.status));button.onclick=()=>{if(busy)return;selectTask(task);refresh();};nav.append(button);}if(selected){const id=selected;const task=await api('/api/tasks/'+encodeURIComponent(id));task.approvals=await api('/api/tasks/'+encodeURIComponent(id)+'/approvals');task.artifacts=await api('/api/tasks/'+encodeURIComponent(id)+'/artifacts');if(selected===id)paint(task);}}catch(e){error(e);}finally{refreshRunning=false;if(refreshAgain){refreshAgain=false;refresh();}}}
+function paint(task){if(loggedOut)return;const signature=JSON.stringify(task)+JSON.stringify((task.approvals||[]).map(a=>Date.parse(a.expires_at)<=Date.now()))+JSON.stringify((task.cards||[]).map(c=>Date.parse(c.expires_at)<=Date.now()));updateTaskControls(task);if(version===signature)return;version=signature;$('task-title').textContent=task.title;$('status').textContent=task.status;$('cancel').hidden=!active(task.status);updateTaskControls(task);const panel=$('conversation');const nearBottom=panel.scrollHeight-panel.scrollTop-panel.clientHeight<100;panel.replaceChildren();paintContextNotice(task,panel);for(const msg of task.messages||[]){if(!['user','assistant','tool'].includes(msg.role))continue;const block=element('div',undefined,'message '+msg.role);block.append(element('small',msg.role==='assistant'?'QI':msg.role.toUpperCase()),element('div',msg.content||''));panel.append(block);}paintLiveText(task,panel);for(const run of task.runs||[]){if(run.error){const notice=element('section',undefined,'card');notice.append(element('h3','Run '+run.status),element('p',run.error));panel.append(notice);}}for(const card of task.cards||[]){if(card.kind==='question'){paintQuestion(task,card,panel);continue;}const block=element('section',undefined,'card');block.append(element('h3',card.title),element('p',card.summary),element('small',card.state));for(const action of card.actions||[]){const button=element('button',action.label);button.disabled=Boolean(task.archived)||card.state!=='pending';button.onclick=async()=>{button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/actions',{card_id:card.id,action:action.id,revision:card.revision});await refresh();}catch(e){error(e);await refresh();}};block.append(button);}panel.append(block);}paintApprovals(task,panel);paintArtifacts(task,panel);if(nearBottom)panel.scrollTop=panel.scrollHeight;}
+async function refresh(){if(loggedOut||signingOut)return;if(refreshRunning){refreshAgain=true;return;}refreshRunning=true;watchTask(selected);try{const listingArchived=showArchived;const tasks=await api(listingArchived?'/api/tasks?archived=true':'/api/tasks');if(listingArchived!==showArchived){refreshAgain=true;return;}const nav=$('tasks');nav.replaceChildren();for(const task of tasks){const button=element('button',task.title,task.id===selected?'active':'');button.append(element('small',task.status));button.onclick=()=>{if(busy||archiveBusy)return;selectTask(task);refresh();};nav.append(button);}if(selected){const id=selected;const task=await api('/api/tasks/'+encodeURIComponent(id));task.approvals=await api('/api/tasks/'+encodeURIComponent(id)+'/approvals');task.artifacts=await api('/api/tasks/'+encodeURIComponent(id)+'/artifacts');if(selected===id)paint(task);}}catch(e){error(e);}finally{refreshRunning=false;if(refreshAgain){refreshAgain=false;refresh();}}}
 function selectTask(task){
  const nextID=task?task.id:null;
  if(task&&nextID===selected)return;
  if(selected!==null)taskDrafts.set(selected,$('prompt').value);
- selected=nextID;watchTask(selected);
+ selected=nextID;selectedArchived=Boolean(task&&task.archived);watchTask(selected);
  $('prompt').value=task?taskDrafts.get(nextID)||'':'';
  clearSkills();version='';$('error').hidden=true;
  $('task-title').textContent=task?task.title:'A new thread.';
  $('status').textContent=task?task.status:'Ready';
  $('conversation').replaceChildren();
  $('cancel').hidden=!task||!active(task.status);
- $('send').disabled=busy||Boolean(task&&active(task.status));
+ updateTaskControls(task);
 }
 $('new-task').onclick=()=>{
- if(busy)return;
- selectTask(null);$('prompt').focus();refresh();
+ if(busy||archiveBusy)return;
+ showArchived=false;$('show-archived').checked=false;selectTask(null);$('prompt').focus();refresh();
 };
 // Keep a key until acceptance is observed. An uncertain network failure must
 // not turn a retry into a new run. Session storage also survives page reloads.
@@ -61,20 +62,35 @@ function submissionKey(id,prompt,names){
  return prior.key;
 }
 function clearSubmission(id){pendingSubmissions.delete(id);try{sessionStorage.removeItem('qi-submission:'+id);}catch(_){}}
+// Keep creation identity until the first message is accepted, so reloading
+// between the two requests cannot silently create a second task.
+function creationRecord(){
+ let record=pendingSubmissions.get('__create__');
+ try{if(!record)record=JSON.parse(sessionStorage.getItem('qi-submission:__create__'));}catch(_){}
+ return record;
+}
+function bindCreation(taskID){
+ const record=creationRecord();if(!record)return;record.taskID=taskID;
+ pendingSubmissions.set('__create__',record);
+ try{sessionStorage.setItem('qi-submission:__create__',JSON.stringify(record));}catch(_){}
+}
+function clearCreationFor(taskID){const record=creationRecord();if(record&&record.taskID===taskID)clearSubmission('__create__');}
 $('composer').onsubmit=async event=>{
- event.preventDefault();if(busy)return;
+ event.preventDefault();if(busy||archiveBusy||selectedArchived||loggedOut)return;
  const draft=$('prompt').value,prompt=draft.trim();if(!prompt)return;
  const names=skillControls.filter(input=>input.checked).map(input=>input.value);
  busy=true;$('prompt').readOnly=true;$('skills').disabled=true;$('send').disabled=true;$('error').hidden=true;
  try{
   if(selected===null){
-   const task=await api('/api/tasks',{title:Array.from(prompt).slice(0,35).join('')});
+   const title=Array.from(prompt).slice(0,35).join('');
+   const task=await api('/api/tasks',{title,idempotency_key:submissionKey('__create__',prompt,names)});
    selected=task.id;
+   bindCreation(task.id);
   }
   const id=selected;
   taskDrafts.set(id,draft);
   await api('/api/tasks/'+encodeURIComponent(id)+'/messages',{prompt,skills:names,idempotency_key:submissionKey(id,prompt,names)});
-  clearSubmission(id);
+  clearSubmission(id);clearCreationFor(id);
   taskDrafts.delete(id);$('prompt').value='';clearSkills();version='';
  }catch(e){error(e);}
  finally{busy=false;$('prompt').readOnly=false;$('skills').disabled=false;await refresh();}
@@ -95,7 +111,7 @@ function paintApprovals(task,panel){
   const buttons=[];
   for(const [label,allow] of [['Allow this action once',true],['Deny',false]]){
    const button=element('button',label);buttons.push(button);
-   button.disabled=approval.status!=='pending'||!Number.isFinite(Date.parse(approval.expires_at))||Date.parse(approval.expires_at)<=Date.now();
+   button.disabled=Boolean(task.archived)||approval.status!=='pending'||!Number.isFinite(Date.parse(approval.expires_at))||Date.parse(approval.expires_at)<=Date.now();
    button.onclick=async()=>{
     for(const item of buttons)item.disabled=true;
     try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/approvals',{id:approval.id,revision:approval.revision,digest:approval.digest,allow});}
@@ -133,12 +149,12 @@ const questionDrafts=new Map();
 function paintQuestion(task,card,panel){
  const block=element('section',undefined,'card question');
  block.append(element('h3',card.title),element('p',card.summary),element('small',card.state));
- const pending=card.state==='pending'&&Number.isFinite(Date.parse(card.expires_at))&&Date.parse(card.expires_at)>Date.now();
+ const pending=!task.archived&&card.state==='pending'&&Number.isFinite(Date.parse(card.expires_at))&&Date.parse(card.expires_at)>Date.now();
  if(card.answer){
   block.append(element('p','Answer: '+(card.answer.text||(card.choices||[]).find(c=>c.id===card.answer.choice_id)?.label||card.answer.choice_id)));
   if(card.state==='answered'){
    block.append(element('small','Answer saved. Continue starts a new turn; it does not approve external actions.'));
-   const button=element('button','Continue task');const latestRun=(task.runs||[]).at(-1);button.disabled=task.status!=='completed'||(latestRun&&latestRun.id!==card.run_id);
+   const button=element('button','Continue task');const latestRun=(task.runs||[]).at(-1);button.disabled=Boolean(task.archived)||task.status!=='completed'||(latestRun&&latestRun.id!==card.run_id);
    button.onclick=async()=>{if(button.disabled)return;button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/actions',{task_id:task.id,card_id:card.id,revision:card.revision,action:'continue'});}catch(e){error(e);}finally{version='';await refresh();}};
    block.append(button);
    if(button.disabled)block.append(element('small','Wait for the current turn to finish. For older, cancelled or interrupted work, send a new message.'));
@@ -185,7 +201,7 @@ async function loadAuth(){
 function finishSignOut(){
  if(loggedOut)return;loggedOut=true;watchTask(null);selected=null;taskDrafts.clear();questionDrafts.clear();pendingSubmissions.clear();version='';
  try{const keys=[];for(let i=0;i<sessionStorage.length;i++){const key=sessionStorage.key(i);if(key&&key.startsWith('qi-submission:'))keys.push(key);}for(const key of keys)sessionStorage.removeItem(key);}catch(_){}
- clearSkills();skillControls=[];$('skills').replaceChildren();$('skill-picker').hidden=true;$('prompt').value='';$('prompt').readOnly=true;$('send').disabled=true;$('cancel').hidden=true;$('conversation').replaceChildren();$('tasks').replaceChildren();$('task-title').textContent='Signed out';$('status').textContent='';$('error').hidden=true;$('auth-controls').hidden=true;
+ clearSkills();skillControls=[];$('skills').replaceChildren();$('skill-picker').hidden=true;$('prompt').value='';$('prompt').readOnly=true;$('send').disabled=true;$('cancel').hidden=true;$('conversation').replaceChildren();$('tasks').replaceChildren();$('archive-task').hidden=true;showArchived=false;selectedArchived=false;$('show-archived').checked=false;$('task-title').textContent='Signed out';$('status').textContent='';$('error').hidden=true;$('auth-controls').hidden=true;
  if(typeof location!=='undefined')location.replace('/login');
 }
 async function signOut(all){
@@ -196,3 +212,26 @@ async function signOut(all){
 }
 $('logout').onclick=()=>signOut(false);
 $('logout-all').onclick=()=>signOut(true);
+
+function updateTaskControls(task){
+ selectedArchived=Boolean(task&&task.archived);
+ $('send').disabled=busy||archiveBusy||selectedArchived||Boolean(task&&active(task.status));
+ $('prompt').readOnly=busy||archiveBusy||selectedArchived;
+ $('skills').disabled=busy||archiveBusy||selectedArchived;
+ $('archive-task').hidden=!task||!selected;
+ $('archive-task').textContent=selectedArchived?'Restore task':'Archive task';
+ $('archive-task').disabled=busy||archiveBusy||Boolean(task&&active(task.status));
+}
+$('show-archived').onchange=()=>{
+ if(busy||archiveBusy||loggedOut){$('show-archived').checked=showArchived;return;}
+ showArchived=$('show-archived').checked;selectTask(null);refresh();
+};
+$('archive-task').onclick=async()=>{
+ if(!selected||busy||archiveBusy||loggedOut||$('archive-task').disabled)return;
+ const id=selected,archived=!selectedArchived;archiveBusy=true;$('archive-task').disabled=true;
+ try{
+  await api('/api/tasks/'+encodeURIComponent(id)+'/archive',{archived});
+  if(selected===id){selectedArchived=archived;showArchived=archived;$('show-archived').checked=archived;version='';}
+ }catch(e){error(e);}
+ finally{archiveBusy=false;await refresh();}
+};

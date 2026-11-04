@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"gopi/internal/testutil"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,13 +21,13 @@ func TestDaemonArtifactsExplicitRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("secure Unix artifact fixture")
 	}
-	root, err := filepath.EvalSymlinks(t.TempDir())
+	root, err := filepath.EvalSymlinks(testutil.PrivateDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(nil)
 	origin := "http://" + server.Listener.Addr().String()
-	cfg := daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), model: "fixture", origin: origin, token: testToken, artifactDir: root}
+	cfg := daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), model: "fixture", origin: origin, token: testToken, artifactDir: root}
 	handler, closeAll, err := openDaemon(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +83,7 @@ func TestDaemonArtifactsExplicitRoot(t *testing.T) {
 	}
 }
 func TestDaemonArtifactRootValidationAndDefaultOff(t *testing.T) {
-	cfg := daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), model: "fixture", origin: "http://127.0.0.1:8686", token: testToken, artifactDir: filepath.Join(t.TempDir(), "missing")}
+	cfg := daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), model: "fixture", origin: "http://127.0.0.1:8686", token: testToken, artifactDir: filepath.Join(testutil.PrivateDir(t), "missing")}
 	if _, closeAll, err := openDaemon(context.Background(), cfg); err == nil {
 		closeAll()
 		t.Fatal("missing artifact root accepted")

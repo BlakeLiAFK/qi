@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"gopi/internal/tasks"
+	"gopi/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -48,7 +49,7 @@ func TestDaemonModelStreamingOptInAndCanonicalCompletion(t *testing.T) {
 			}))
 			defer model.Close()
 			origin := "http://127.0.0.1:8686"
-			handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), model: "fixture", baseURL: model.URL, origin: origin, token: testToken, maxSteps: 2, modelStream: enabled})
+			handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), model: "fixture", baseURL: model.URL, origin: origin, token: testToken, maxSteps: 2, modelStream: enabled})
 			if err != nil {
 				t.Fatal(err)
 			}

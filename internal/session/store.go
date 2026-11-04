@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -24,6 +23,7 @@ var ErrConflict = errors.New("session revision conflict")
 const timestampFormat = "2006-01-02T15:04:05.000000000Z"
 
 type Session struct {
+	Archived  bool      `json:"archived"`
 	ID        string    `json:"id"`
 	Revision  int64     `json:"revision"`
 	Title     string    `json:"title"`
@@ -48,17 +48,17 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(absolute, os.O_CREATE|os.O_RDWR, 0600)
+	if err = ValidatePrivateStorage(absolute); err != nil {
+		return nil, err
+	}
+	f, err := openPrivateFile(absolute)
 	if err != nil {
 		return nil, err
 	}
 	if err = f.Close(); err != nil {
 		return nil, err
 	}
-	absolute, err = filepath.EvalSymlinks(absolute)
-	if err != nil {
-		return nil, err
-	}
+
 	u := &url.URL{Scheme: "file", Path: absolute}
 	query := url.Values{}
 	for _, pragma := range []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(FULL)"} {
@@ -89,6 +89,7 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	hasRevision := false
+	hasArchived := false
 	for rows.Next() {
 		var cid, notnull, pk int
 		var name, kind string
@@ -97,6 +98,9 @@ func Open(path string) (*Store, error) {
 			rows.Close()
 			db.Close()
 			return nil, err
+		}
+		if name == "archived" {
+			hasArchived = true
 		}
 		if name == "revision" {
 			hasRevision = true
@@ -114,6 +118,12 @@ func Open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
+	if !hasArchived {
+		if _, err = db.Exec("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))"); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if err = s.initTasks(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize task storage: %w", err)
@@ -121,6 +131,10 @@ func Open(path string) (*Store, error) {
 	if err = s.initApprovals(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize approvals: %w", err)
+	}
+	if err = ValidatePrivateStorage(absolute); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return s, nil
 }
@@ -146,7 +160,7 @@ type scanner interface{ Scan(...any) error }
 func scanSession(row scanner) (Session, error) {
 	var result Session
 	var created, updated string
-	if err := row.Scan(&result.ID, &result.Title, &created, &updated, &result.Revision); err != nil {
+	if err := row.Scan(&result.ID, &result.Title, &created, &updated, &result.Revision, &result.Archived); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
 		}
@@ -164,10 +178,10 @@ func scanSession(row scanner) (Session, error) {
 	return result, nil
 }
 func (s *Store) Get(ctx context.Context, id string) (Session, error) {
-	return scanSession(s.db.QueryRowContext(ctx, "SELECT id,title,created_at,updated_at,revision FROM sessions WHERE id=?", id))
+	return scanSession(s.db.QueryRowContext(ctx, "SELECT id,title,created_at,updated_at,revision,archived FROM sessions WHERE id=?", id))
 }
 func (s *Store) List(ctx context.Context) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id,title,created_at,updated_at,revision FROM sessions ORDER BY updated_at DESC,id")
+	rows, err := s.db.QueryContext(ctx, "SELECT id,title,created_at,updated_at,revision,archived FROM sessions WHERE archived=0 ORDER BY updated_at DESC,id")
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +273,7 @@ func (s *Store) Load(ctx context.Context, id string) (Session, []agent.Message, 
 		return Session{}, nil, err
 	}
 	defer tx.Rollback()
-	item, err := scanSession(tx.QueryRowContext(ctx, "SELECT id,title,created_at,updated_at,revision FROM sessions WHERE id=?", id))
+	item, err := scanSession(tx.QueryRowContext(ctx, "SELECT id,title,created_at,updated_at,revision,archived FROM sessions WHERE id=?", id))
 	if err != nil {
 		return Session{}, nil, err
 	}

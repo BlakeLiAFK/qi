@@ -44,6 +44,9 @@ type ApprovalBackend interface {
 	Approvals(context.Context, string) ([]tasks.Approval, error)
 	DecideApproval(context.Context, string, tasks.ApprovalDecision) (tasks.Approval, error)
 }
+type TaskCreationBackend interface {
+	CreateIdempotent(context.Context, string, string) (Task, error)
+}
 type SubmissionBackend interface {
 	Submit(context.Context, string, string, string, []string) (tasks.Run, error)
 }
@@ -321,7 +324,22 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 func (s *server) tasks(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		tasks, err := s.cfg.Backend.List(r.Context())
+		var tasks []Task
+		var err error
+		if value := r.URL.Query().Get("archived"); value != "" && value != "false" && value != "true" {
+			http.Error(w, "invalid archived filter", 400)
+			return
+		}
+		if r.URL.Query().Get("archived") == "true" {
+			backend, ok := s.cfg.Backend.(ArchiveBackend)
+			if !ok {
+				http.Error(w, "archiving unavailable", 503)
+				return
+			}
+			tasks, err = backend.ListArchived(r.Context(), true)
+		} else {
+			tasks, err = s.cfg.Backend.List(r.Context())
+		}
 		if err != nil {
 			http.Error(w, "cannot list tasks", 500)
 			return
@@ -333,12 +351,28 @@ func (s *server) tasks(w http.ResponseWriter, r *http.Request) {
 	case "POST":
 		var req struct {
 			Title string `json:"title"`
+			Key   string `json:"idempotency_key,omitempty"`
 		}
 		if decode(w, r, &req) != nil || strings.TrimSpace(req.Title) == "" || len(req.Title) > 160 {
 			http.Error(w, "invalid title (maximum 160 bytes)", 400)
 			return
 		}
-		task, err := s.cfg.Backend.Create(r.Context(), req.Title)
+		var task Task
+		var err error
+		if req.Key != "" {
+			if len(req.Key) > 128 || strings.IndexFunc(req.Key, func(c rune) bool { return c < 33 || c > 126 }) >= 0 {
+				http.Error(w, "invalid idempotency key", 400)
+				return
+			}
+			backend, ok := s.cfg.Backend.(TaskCreationBackend)
+			if !ok {
+				http.Error(w, "idempotent task creation unavailable", 503)
+				return
+			}
+			task, err = backend.CreateIdempotent(r.Context(), req.Key, req.Title)
+		} else {
+			task, err = s.cfg.Backend.Create(r.Context(), req.Title)
+		}
 		if err != nil {
 			http.Error(w, "task could not be started", 409)
 			return
@@ -364,6 +398,10 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respond(w, task)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "archive" {
+		s.archive(w, r, id)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "events" {

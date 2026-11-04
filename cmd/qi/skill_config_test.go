@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"gopi/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,7 +20,7 @@ func TestExplicitSkillRoots(t *testing.T) {
 	if err != nil || catalog != nil {
 		t.Fatal("skills must be disabled by default")
 	}
-	if _, err = discoverSkills(context.Background(), []string{filepath.Join(t.TempDir(), "missing")}); err == nil {
+	if _, err = discoverSkills(context.Background(), []string{filepath.Join(testutil.PrivateDir(t), "missing")}); err == nil {
 		t.Fatal("missing root accepted")
 	}
 	var roots skillRootFlags
@@ -28,7 +29,7 @@ func TestExplicitSkillRoots(t *testing.T) {
 	}
 }
 func TestAttachSkillsApplyToOneTurnOnly(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.PrivateDir(t)
 	body := "Use fixture terminology; do not execute tools."
 	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: fixture\ndescription: Fixture reference\n---\n"+body), 0600); err != nil {
 		t.Fatal(err)
@@ -52,7 +53,7 @@ func TestAttachSkillsApplyToOneTurnOnly(t *testing.T) {
 	defer provider.Close()
 	server := httptest.NewUnstartedServer(nil)
 	origin := "http://" + server.Listener.Addr().String()
-	handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: origin, token: testToken, skills: catalog})
+	handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: origin, token: testToken, skills: catalog})
 	if err != nil {
 		t.Fatal(err)
 	}

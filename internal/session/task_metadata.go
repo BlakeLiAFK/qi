@@ -2,12 +2,14 @@ package session
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
 // TaskMetadata is a sidebar snapshot, not a conversation snapshot. Listing does
 // not read message payloads, event payloads, or the full run history.
 type TaskMetadata struct {
+	Archived  bool      `json:"archived"`
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	Status    string    `json:"status"`
@@ -15,16 +17,25 @@ type TaskMetadata struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-const taskMetadataQuery = `SELECT s.id,s.title,COALESCE(r.status,'idle'),s.created_at,
+const taskMetadataQuery = `SELECT s.id,s.title,COALESCE(r.status,'idle'),s.created_at,s.archived,
  MAX(s.updated_at,COALESCE(r.started_at,''),COALESCE(r.finished_at,'')) AS activity_at
  FROM sessions s
  LEFT JOIN runs r ON r.id=(SELECT latest.id FROM runs latest WHERE latest.session_id=s.id ORDER BY latest.started_at DESC,latest.id DESC LIMIT 1)
+ WHERE s.archived=0
  ORDER BY activity_at DESC,s.id`
 
 // ListTaskMetadata uses one query and one indexed latest-run lookup per task.
 // Its cost does not grow with the number or size of messages and events.
 func (s *Store) ListTaskMetadata(ctx context.Context) ([]TaskMetadata, error) {
-	rows, err := s.db.QueryContext(ctx, taskMetadataQuery)
+	return s.ListTaskMetadataArchived(ctx, false)
+}
+
+func (s *Store) ListTaskMetadataArchived(ctx context.Context, archived bool) ([]TaskMetadata, error) {
+	query := taskMetadataQuery
+	if archived {
+		query = strings.Replace(query, "WHERE s.archived=0", "WHERE s.archived=1", 1)
+	}
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +44,7 @@ func (s *Store) ListTaskMetadata(ctx context.Context) ([]TaskMetadata, error) {
 	for rows.Next() {
 		var item TaskMetadata
 		var created, updated string
-		if err := rows.Scan(&item.ID, &item.Title, &item.Status, &created, &updated); err != nil {
+		if err := rows.Scan(&item.ID, &item.Title, &item.Status, &created, &item.Archived, &updated); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, err = time.Parse(time.RFC3339Nano, created)

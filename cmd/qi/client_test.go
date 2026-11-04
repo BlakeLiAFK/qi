@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"gopi/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,7 +31,7 @@ func TestAttachSharesDaemonHistory(t *testing.T) {
 	defer provider.Close()
 	server := httptest.NewUnstartedServer(nil)
 	origin := "http://" + server.Listener.Addr().String()
-	handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: origin, token: testToken, maxSteps: 3})
+	handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: origin, token: testToken, maxSteps: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,7 @@ func TestDaemonCodingApprovalHTTPBoundary(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix script fixture")
 	}
-	workspace := t.TempDir()
+	workspace := testutil.PrivateDir(t)
 	executable := filepath.Join(workspace, "fake-codex")
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\n[ \"$CODEX_API_KEY\" = fixture-codex-key ] || exit 21\n[ -z \"$OPENAI_API_KEY\" ] || exit 22\n[ -z \"$QI_WEB_TOKEN\" ] || exit 23\nprintf done > dispatched\nprintf fixture-output\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -185,7 +186,7 @@ func TestDaemonCodingApprovalHTTPBoundary(t *testing.T) {
 	defer provider.Close()
 	server := httptest.NewUnstartedServer(nil)
 	origin := "http://" + server.Listener.Addr().String()
-	handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: origin, token: testToken, maxSteps: 3, coding: &tasks.CodingConfig{Workspace: workspace, CodexPath: executable, Timeout: time.Second, Credentials: workerCredentials(func(key string) string {
+	handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: origin, token: testToken, maxSteps: 3, coding: &tasks.CodingConfig{Workspace: workspace, CodexPath: executable, Timeout: time.Second, Credentials: workerCredentials(func(key string) string {
 		if key == "QI_CODEX_API_KEY" {
 			return "fixture-codex-key"
 		}

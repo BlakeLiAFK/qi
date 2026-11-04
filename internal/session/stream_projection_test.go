@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"gopi/internal/testutil"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,7 +12,7 @@ import (
 
 func TestSnapshotProjectsOnlyLatestOpenStream(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(filepath.Join(t.TempDir(), "projection.db"))
+	s, err := Open(filepath.Join(testutil.PrivateDir(t), "projection.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ package session
 
 import (
 	"errors"
+	"gopi/internal/testutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,25 +35,15 @@ func TestEngineLockCrashRelease(t *testing.T) {
 	release()
 }
 func TestEngineLockSymlinkAlias(t *testing.T) {
-	store, path := openTest(t)
-	alias := filepath.Join(t.TempDir(), "alias.db")
+	_, path := openTest(t)
+	alias := filepath.Join(testutil.PrivateDir(t), "alias.db")
 	if err := os.Symlink(path, alias); err != nil {
 		t.Fatal(err)
 	}
-	other, err := Open(alias)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer other.Close()
-	release, err := store.AcquireEngineLock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	if extra, err := other.AcquireEngineLock(); !errors.Is(err, ErrEngineLocked) {
-		if extra != nil {
-			extra()
+	if store, err := Open(alias); !errors.Is(err, ErrUnsafeStorage) {
+		if store != nil {
+			store.Close()
 		}
-		t.Fatalf("alias bypassed lock: %v", err)
+		t.Fatalf("symlink accepted: %v", err)
 	}
 }

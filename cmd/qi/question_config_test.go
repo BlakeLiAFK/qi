@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"gopi/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -34,7 +35,7 @@ func TestDaemonQuestionsExplicitOptIn(t *testing.T) {
 	defer provider.Close()
 	server := httptest.NewUnstartedServer(nil)
 	origin := "http://" + server.Listener.Addr().String()
-	handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: origin, token: testToken, questions: true})
+	handler, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), model: "fixture", baseURL: provider.URL, origin: origin, token: testToken, questions: true})
 	if err != nil {
 		t.Fatal(err)
 	}

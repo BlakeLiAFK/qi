@@ -46,7 +46,7 @@ func (s *Store) LoadTaskSnapshot(ctx context.Context, id string) (TaskSnapshot, 
 func readTaskSnapshot(ctx context.Context, q snapshotReader, id string) (TaskSnapshot, error) {
 	result := TaskSnapshot{Messages: []agent.Message{}, Runs: []Run{}, Events: []Event{}}
 	var err error
-	result.Session, err = scanSession(q.QueryRowContext(ctx, "SELECT id,title,created_at,updated_at,revision FROM sessions WHERE id=?", id))
+	result.Session, err = scanSession(q.QueryRowContext(ctx, "SELECT id,title,created_at,updated_at,revision,archived FROM sessions WHERE id=?", id))
 	if err != nil {
 		return TaskSnapshot{}, err
 	}

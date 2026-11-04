@@ -46,3 +46,7 @@ func (b EngineBackend) StartWithSkills(ctx context.Context, id, prompt string, n
 func (b EngineBackend) Submit(ctx context.Context, id, key, prompt string, names []string) (tasks.Run, error) {
 	return b.Engine.Submit(ctx, id, "local-owner", key, prompt, names)
 }
+
+func (b EngineBackend) CreateIdempotent(ctx context.Context, key, title string) (Task, error) {
+	return b.Engine.CreateIdempotent(ctx, "local-owner", key, title)
+}

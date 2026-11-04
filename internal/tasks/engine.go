@@ -58,7 +58,8 @@ type ContextNotice struct {
 	InputBytes      int    `json:"input_bytes"`
 }
 type Task struct {
- LiveText *LiveText `json:"live_text,omitempty"`
+	Archived      bool            `json:"archived"`
+	LiveText      *LiveText       `json:"live_text,omitempty"`
 	ContextNotice *ContextNotice  `json:"context_notice,omitempty"`
 	ID            string          `json:"id"`
 	Title         string          `json:"title"`
@@ -160,11 +161,11 @@ func (e *Engine) Create(ctx context.Context, title string) (Task, error) {
 	if len(title) > 160 {
 		return Task{}, errors.New("title exceeds 160 bytes")
 	}
-	existing, err := e.store.List(ctx)
+	existing, err := e.store.Count(ctx)
 	if err != nil {
 		return Task{}, err
 	}
-	if len(existing) >= e.cfg.MaxTasks {
+	if existing >= e.cfg.MaxTasks {
 		return Task{}, errors.New("task capacity reached")
 	}
 	s, err := e.store.Create(ctx, title)
@@ -176,13 +177,16 @@ func (e *Engine) Create(ctx context.Context, title string) (Task, error) {
 
 // List returns metadata only. Fetch a single task with Get for its conversation.
 func (e *Engine) List(ctx context.Context) ([]Task, error) {
-	metadata, err := e.store.ListTaskMetadata(ctx)
+	return e.ListArchived(ctx, false)
+}
+func (e *Engine) ListArchived(ctx context.Context, archived bool) ([]Task, error) {
+	metadata, err := e.store.ListTaskMetadataArchived(ctx, archived)
 	if err != nil {
 		return nil, err
 	}
 	result := make([]Task, 0, len(metadata))
 	for _, item := range metadata {
-		result = append(result, Task{ID: item.ID, Title: item.Title, Status: item.Status, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
+		result = append(result, Task{Archived: item.Archived, ID: item.ID, Title: item.Title, Status: item.Status, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
 	}
 	return result, nil
 }
@@ -192,7 +196,7 @@ func (e *Engine) Get(ctx context.Context, id string) (Task, error) {
 		return Task{}, err
 	}
 	s, history, runs, events := snapshot.Session, snapshot.Messages, snapshot.Runs, snapshot.Events
-	t := Task{ID: id, Title: s.Title, Status: "idle", CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, Messages: history, Runs: runs, Cards: []Card{}}
+	t := Task{Archived: s.Archived, ID: id, Title: s.Title, Status: "idle", CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, Messages: history, Runs: runs, Cards: []Card{}}
 	for _, r := range runs {
 		if r.StartedAt.After(t.UpdatedAt) {
 			t.UpdatedAt = r.StartedAt
@@ -237,8 +241,8 @@ func (e *Engine) Get(ctx context.Context, id string) (Task, error) {
 			t.Cards = append(t.Cards, c)
 		}
 	}
-	t.LiveText = projectLiveText(id,events,runs)
- return t, nil
+	t.LiveText = projectLiveText(id, events, runs)
+	return t, nil
 }
 func (e *Engine) Events(ctx context.Context, id string, after int64) ([]Event, error) {
 	return e.store.Events(ctx, id, after)

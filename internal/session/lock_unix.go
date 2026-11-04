@@ -5,7 +5,6 @@ package session
 import (
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -18,7 +17,10 @@ var ErrEngineLocked = errors.New("another engine owns this session database")
 // process death. The sidecar must not be deleted, including during release:
 // unlinking it could allow two processes to lock different filesystem inodes.
 func (s *Store) AcquireEngineLock() (func(), error) {
-	f, err := os.OpenFile(s.path+".engine.lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err := ValidatePrivateStorage(s.path); err != nil {
+		return nil, err
+	}
+	f, err := openPrivateFile(s.path + ".engine.lock")
 	if err != nil {
 		return nil, err
 	}

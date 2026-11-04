@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"gopi/internal/artifacts"
 	"gopi/internal/session"
+	"gopi/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ import (
 
 func TestArtifactRoutesAuthenticatedScopedAndAttachmentOnly(t *testing.T) {
 	ctx := context.Background()
-	store, err := session.Open(filepath.Join(t.TempDir(), "db"))
+	store, err := session.Open(filepath.Join(testutil.PrivateDir(t), "db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +23,7 @@ func TestArtifactRoutesAuthenticatedScopedAndAttachmentOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	root := testutil.PrivateDir(t)
 	os.Mkdir(filepath.Join(root, task.ID), 0700)
 	os.WriteFile(filepath.Join(root, task.ID, "unsafe.html"), []byte("<script>alert(1)</script>"), 0600)
 	svc, err := artifacts.New(root, store)
@@ -86,12 +87,12 @@ func TestArtifactResponseSlotsBoundSlowClients(t *testing.T) {
 			<-artifactResponses
 		}
 	}()
-	store, err := session.Open(filepath.Join(t.TempDir(), "db"))
+	store, err := session.Open(filepath.Join(testutil.PrivateDir(t), "db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	svc, err := artifacts.New(t.TempDir(), store)
+	svc, err := artifacts.New(testutil.PrivateDir(t), store)
 	if err != nil {
 		t.Fatal(err)
 	}

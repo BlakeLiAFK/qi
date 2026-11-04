@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"gopi/internal/testutil"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -108,7 +109,7 @@ func TestNativeAnthropicCLIAndDaemon(t *testing.T) {
 	}
 	server := httptest.NewUnstartedServer(nil)
 	origin := "http://" + server.Listener.Addr().String()
-	h, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(t.TempDir(), "tasks.db"), providerName: c.name, model: c.model, baseURL: c.base, apiKey: c.key, maxOutputTokens: c.maxTokens, origin: origin, token: testToken})
+	h, closeAll, err := openDaemon(context.Background(), daemonConfig{database: filepath.Join(testutil.PrivateDir(t), "tasks.db"), providerName: c.name, model: c.model, baseURL: c.base, apiKey: c.key, maxOutputTokens: c.maxTokens, origin: origin, token: testToken})
 	if err != nil {
 		t.Fatal(err)
 	}

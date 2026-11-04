@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"gopi/internal/testutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,7 +18,7 @@ import (
 
 func openTest(t *testing.T) (*Store, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "history.db")
+	path := filepath.Join(testutil.PrivateDir(t), "history.db")
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +210,7 @@ func TestSessionIsolation(t *testing.T) {
 	}
 }
 func TestOpenInvalid(t *testing.T) {
-	for _, path := range []string{"", filepath.Join(t.TempDir(), "missing", "db"), t.TempDir()} {
+	for _, path := range []string{"", filepath.Join(testutil.PrivateDir(t), "missing", "db"), testutil.PrivateDir(t)} {
 		if s, err := Open(path); err == nil {
 			s.Close()
 			t.Fatalf("opened invalid %q", path)
@@ -218,7 +219,7 @@ func TestOpenInvalid(t *testing.T) {
 }
 
 func TestLegacySchemaUpgrade(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy.db")
+	path := filepath.Join(testutil.PrivateDir(t), "legacy.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -232,6 +233,9 @@ func TestLegacySchemaUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
+	if err = os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
