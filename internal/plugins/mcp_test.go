@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"gopi/internal/agent"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +34,9 @@ func TestMCPHelper(t *testing.T) {
 		case "tools/list":
 			result = map[string]any{"tools": []Tool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}}
 		case "tools/call":
+			if os.Getenv("GOPI_MCP_HANG_CALL") == "1" {
+				continue
+			}
 			result = map[string]any{"content": []map[string]string{{"type": "text", "text": "hello"}}}
 		default:
 			continue
@@ -65,5 +71,35 @@ func TestLifecycle(t *testing.T) {
 func TestMissingCommand(t *testing.T) {
 	if _, err := Start(context.Background(), Config{}); err == nil {
 		t.Fatal("missing command accepted")
+	}
+}
+
+func TestCallTimeoutIsUnknown(t *testing.T) {
+	c, err := Start(context.Background(), Config{Command: os.Args[0], Args: []string{"-test.run=TestMCPHelper"}, Env: []string{"GOPI_MCP_HELPER=1", "GOPI_MCP_HANG_CALL=1"}, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = c.Call(ctx, "echo", json.RawMessage(`{}`))
+	if !errors.Is(err, agent.ErrOutcomeUnknown) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("missing unknown outcome: %v", err)
+	}
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+	_, err = c.Call(ctx2, "echo", json.RawMessage(`{}`))
+	if !errors.Is(err, context.Canceled) || errors.Is(err, agent.ErrOutcomeUnknown) {
+		t.Fatalf("pre-dispatch cancellation should be known: %v", err)
+	}
+}
+
+func TestPluginEnvironmentExcludesImplicitSecrets(t *testing.T) {
+	t.Setenv("GOPI_TEST_SECRET", "hidden")
+	t.Setenv("PATH", "/test/bin")
+	env := pluginEnvironment([]string{"EXPLICIT_TOKEN=allowed"})
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "GOPI_TEST_SECRET=") || !strings.Contains(joined, "PATH=/test/bin") || !strings.Contains(joined, "EXPLICIT_TOKEN=allowed") {
+		t.Fatal("bad environment filtering")
 	}
 }

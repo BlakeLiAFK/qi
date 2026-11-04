@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"gopi/internal/agent"
 	"io"
 	"os"
 	"os/exec"
@@ -54,7 +55,7 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Dir = cfg.Dir
-	cmd.Env = append(os.Environ(), cfg.Env...)
+	cmd.Env = pluginEnvironment(cfg.Env)
 	cmd.Stderr = os.Stderr
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -99,6 +100,20 @@ func Start(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	return c, nil
 }
+
+// Only routine process settings are inherited. API keys and other application
+// credentials must be explicitly supplied through Config.Env. This reduces
+// accidental leakage, but a trusted plugin still has the user's OS privileges.
+func pluginEnvironment(extra []string) []string {
+	env := []string{}
+	for _, key := range []string{"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "SystemRoot", "WINDIR", "USERPROFILE"} {
+		if v, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+v)
+		}
+	}
+	return append(env, extra...)
+}
+
 func (c *Client) finish() { c.once.Do(func() { close(c.done) }) }
 func (c *Client) read(r io.Reader) {
 	s := bufio.NewScanner(r)
@@ -129,15 +144,34 @@ func (c *Client) write(v any) error {
 	return json.NewEncoder(c.stdin).Encode(v)
 }
 func (c *Client) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-c.done:
+		return nil, errors.New("plugin exited")
+	default:
+	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	c.mu.Lock()
+	if len(c.pending) >= 128 {
+		c.mu.Unlock()
+		return nil, errors.New("too many pending plugin requests")
+	}
 	c.next++
 	id := c.next
 	ch := make(chan response, 1)
 	c.pending[id] = ch
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
+	// Once handed to the transport, failures cannot establish non-execution.
+	uncertain := func(err error) error {
+		if method == "tools/call" {
+			return fmt.Errorf("%w: %w", agent.ErrOutcomeUnknown, err)
+		}
+		return err
+	}
 	// Writing can block on a non-reading process. Close kills it on deadline.
 	written := make(chan error, 1)
 	go func() {
@@ -146,31 +180,37 @@ func (c *Client) request(ctx context.Context, method string, params any) (json.R
 	select {
 	case err := <-written:
 		if err != nil {
-			return nil, err
+			return nil, uncertain(err)
 		}
 	case <-ctx.Done():
 		c.Close()
-		return nil, ctx.Err()
+		return nil, uncertain(ctx.Err())
 	case <-c.done:
-		return nil, errors.New("plugin exited")
+		return nil, uncertain(errors.New("plugin exited"))
 	}
 	select {
 	case msg := <-ch:
 		if msg.Error != nil {
 			return nil, fmt.Errorf("MCP %d: %s", msg.Error.Code, msg.Error.Message)
 		}
+		if !agent.IsJSONObject(msg.Result) {
+			return nil, uncertain(errors.New("invalid MCP result object"))
+		}
 		return msg.Result, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, uncertain(ctx.Err())
 	case <-c.done:
-		return nil, errors.New("plugin exited")
+		return nil, uncertain(errors.New("plugin exited"))
 	}
 }
 func (c *Client) Tools(ctx context.Context) ([]Tool, error) {
 	var all []Tool
 	cursor := ""
 	seen := map[string]bool{}
-	for {
+	for pageCount := 0; ; pageCount++ {
+		if pageCount >= 100 {
+			return nil, errors.New("MCP discovery page limit exceeded")
+		}
 		p := map[string]any{}
 		if cursor != "" {
 			p["cursor"] = cursor
@@ -185,6 +225,14 @@ func (c *Client) Tools(ctx context.Context) ([]Tool, error) {
 		}
 		if err = json.Unmarshal(raw, &page); err != nil {
 			return nil, err
+		}
+		if len(all)+len(page.Tools) > agent.MaxTools {
+			return nil, errors.New("MCP tool count limit exceeded")
+		}
+		for _, tool := range page.Tools {
+			if tool.Name == "" || len(tool.Name) > 256 || !agent.IsJSONObject(tool.InputSchema) {
+				return nil, errors.New("invalid MCP tool definition")
+			}
 		}
 		all = append(all, page.Tools...)
 		if page.Next == "" {
@@ -201,8 +249,8 @@ func (c *Client) Call(ctx context.Context, name string, args json.RawMessage) (j
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
-	if !json.Valid(args) {
-		return nil, errors.New("invalid tool arguments JSON")
+	if name == "" || len(name) > 256 || !agent.IsJSONObject(args) {
+		return nil, errors.New("invalid tool name or arguments; arguments must be a JSON object within size limit")
 	}
 	return c.request(ctx, "tools/call", map[string]any{"name": name, "arguments": args})
 }

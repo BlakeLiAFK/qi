@@ -47,6 +47,23 @@ type Event struct {
 
 var ErrMaxSteps = errors.New("agent exceeded maximum model steps")
 
+// ErrOutcomeUnknown means a dispatched tool may have performed its side effect.
+// Callers must reconcile the actual outcome before retrying; it is not a
+// recoverable model error. All tools are treated as potentially side-effectful.
+var ErrOutcomeUnknown = errors.New("tool outcome unknown; verify external state before retrying")
+
+const (
+	MaxToolCalls = 128
+	MaxTools     = 1024
+	MaxToolBytes = 1024 * 1024
+)
+
+// IsJSONObject checks the required top-level shape, not full JSON Schema.
+func IsJSONObject(raw json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	return len(raw) <= MaxToolBytes && json.Unmarshal(raw, &object) == nil && object != nil
+}
+
 type Agent struct {
 	Model    Model
 	Tools    []Tool
@@ -72,6 +89,9 @@ func (a *Agent) Run(ctx context.Context, history []Message) ([]Message, error) {
 	if limit <= 0 {
 		limit = 20
 	}
+	if len(a.Tools) > MaxTools {
+		return messages, errors.New("too many tools")
+	}
 	registry := make(map[string]Tool, len(a.Tools))
 	definitions := make([]ToolDefinition, 0, len(a.Tools))
 	for _, tool := range a.Tools {
@@ -79,7 +99,7 @@ func (a *Agent) Run(ctx context.Context, history []Message) ([]Message, error) {
 			return messages, errors.New("nil tool")
 		}
 		d := tool.Definition()
-		if d.Name == "" || !json.Valid(d.Parameters) {
+		if d.Name == "" || !IsJSONObject(d.Parameters) {
 			return messages, fmt.Errorf("invalid tool definition %q", d.Name)
 		}
 		if _, exists := registry[d.Name]; exists {
@@ -112,6 +132,9 @@ func (a *Agent) Run(ctx context.Context, history []Message) ([]Message, error) {
 			return messages, nil
 		}
 		// Validate the complete batch before any side effects.
+		if len(response.ToolCalls) > MaxToolCalls {
+			return fail(errors.New("too many tool calls in one batch"))
+		}
 		ids := make(map[string]bool)
 		for _, call := range response.ToolCalls {
 			if call.ID == "" || ids[call.ID] {
@@ -124,19 +147,30 @@ func (a *Agent) Run(ctx context.Context, history []Message) ([]Message, error) {
 				return fail(err)
 			}
 			a.emit(Event{Type: "tool_start", ToolCall: &call})
+			if err := ctx.Err(); err != nil {
+				return fail(err)
+			}
 			var output string
 			var toolErr error
+			dispatched := false
 			tool, found := registry[call.Name]
 			switch {
 			case !found:
 				toolErr = fmt.Errorf("unknown tool %q", call.Name)
-			case !json.Valid(call.Arguments):
-				toolErr = errors.New("invalid tool arguments JSON")
+			case !IsJSONObject(call.Arguments):
+				toolErr = errors.New("tool arguments must be a JSON object within size limit")
 			default:
+				dispatched = true
 				output, toolErr = tool.Execute(ctx, call.Arguments)
 			}
-			if err := ctx.Err(); err != nil {
-				return fail(err)
+			// Preserve an explicit result even when cancellation races completion.
+			// A timeout does not prove that a remote side effect was rolled back.
+			if dispatched && (ctx.Err() != nil || errors.Is(toolErr, context.Canceled) || errors.Is(toolErr, context.DeadlineExceeded)) {
+				toolErr = fmt.Errorf("%w: %w", ErrOutcomeUnknown, errors.Join(toolErr, ctx.Err()))
+			}
+			if len(output) > MaxToolBytes {
+				output = ""
+				toolErr = errors.Join(toolErr, errors.New("tool output exceeded size limit"))
 			}
 			event := Event{Type: "tool_end", ToolCall: &call}
 			if toolErr != nil {
@@ -148,6 +182,12 @@ func (a *Agent) Run(ctx context.Context, history []Message) ([]Message, error) {
 			messages = append(messages, result)
 			event.Message = &result
 			a.emit(event)
+			if errors.Is(toolErr, ErrOutcomeUnknown) {
+				return fail(toolErr)
+			}
+			if err := ctx.Err(); err != nil {
+				return fail(err)
+			}
 		}
 	}
 	return fail(ErrMaxSteps)

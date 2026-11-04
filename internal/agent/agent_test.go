@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -143,5 +144,68 @@ func TestModelFailurePreservesHistory(t *testing.T) {
 	got, err := a.Run(context.Background(), []Message{{Role: "user", Content: "hello"}})
 	if !errors.Is(err, expected) || len(got) != 1 {
 		t.Fatalf("%v %v", got, err)
+	}
+}
+
+func TestToolStartCancellationPreventsExecution(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tool := &testTool{}
+	a := Agent{Tools: []Tool{tool}, OnEvent: func(e Event) {
+		if e.Type == "tool_start" {
+			cancel()
+		}
+	}, Model: modelFunc(func(context.Context, []Message, []ToolDefinition) (Message, error) {
+		return Message{ToolCalls: []ToolCall{{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)}}}, nil
+	})}
+	if _, err := a.Run(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if tool.calls != 0 {
+		t.Fatal("tool executed after persistence callback cancellation")
+	}
+}
+
+func TestUnknownOutcomeStopsBeforeRetryAndRemainingBatch(t *testing.T) {
+	for _, cause := range []error{context.DeadlineExceeded, context.Canceled, ErrOutcomeUnknown} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			tool := &testTool{err: cause}
+			models := 0
+			events := []string{}
+			a := Agent{Tools: []Tool{tool}, OnEvent: func(e Event) { events = append(events, e.Type) }, Model: modelFunc(func(context.Context, []Message, []ToolDefinition) (Message, error) {
+				models++
+				return Message{ToolCalls: []ToolCall{{ID: "1", Name: "echo", Arguments: json.RawMessage(`{}`)}, {ID: "2", Name: "echo", Arguments: json.RawMessage(`{}`)}}}, nil
+			})}
+			messages, err := a.Run(context.Background(), nil)
+			if !errors.Is(err, ErrOutcomeUnknown) || tool.calls != 1 || models != 1 {
+				t.Fatalf("err=%v calls=%d models=%d", err, tool.calls, models)
+			}
+			if len(messages) != 2 || messages[1].Role != "tool" || !strings.Contains(messages[1].Content, "outcome unknown") {
+				t.Fatalf("unknown result not persisted: %v", messages)
+			}
+			if !reflect.DeepEqual(events, []string{"run_start", "message", "tool_start", "tool_end", "error"}) {
+				t.Fatal(events)
+			}
+		})
+	}
+}
+
+func TestObjectArgumentsAndBatchLimits(t *testing.T) {
+	for _, args := range []string{`null`, `[]`, `1`, `"text"`, `{"v":"` + strings.Repeat("x", MaxToolBytes) + `"}`} {
+		tool := &testTool{}
+		a := Agent{Tools: []Tool{tool}, MaxSteps: 1, Model: modelFunc(func(context.Context, []Message, []ToolDefinition) (Message, error) {
+			return Message{ToolCalls: []ToolCall{{ID: "1", Name: "echo", Arguments: json.RawMessage(args)}}}, nil
+		})}
+		_, _ = a.Run(context.Background(), nil)
+		if tool.calls != 0 {
+			t.Fatal("executed invalid arguments")
+		}
+	}
+	tool := &testTool{}
+	a := Agent{Tools: []Tool{tool}, Model: modelFunc(func(context.Context, []Message, []ToolDefinition) (Message, error) {
+		return Message{ToolCalls: make([]ToolCall, MaxToolCalls+1)}, nil
+	})}
+	if _, err := a.Run(context.Background(), nil); err == nil || tool.calls != 0 {
+		t.Fatal("batch limit not enforced")
 	}
 }
