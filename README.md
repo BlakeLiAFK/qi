@@ -571,3 +571,12 @@ Model requests never follow redirects, including redirects from HTTPS, to avoid
 forwarding API keys or conversation contents to another endpoint. Configure the
 final API root directly. HTTPS does not establish provider trust: choose a
 provider you trust with the full conversation and tool outputs.
+
+## Optional saved memory
+
+The WebUI’s **Manage saved memory** link opens authenticated local management.
+Choose one task or explicitly choose global, then create, inspect revisions, edit
+or delete your own records. Nothing is selected by default or sent to models.
+Per-turn model use is not implemented. Do not save credentials or sensitive
+personal information. Records are plaintext; deletion removes all live revisions,
+not backups or SQLite remnants. See [boundaries and API](docs/explicit-memory.md).

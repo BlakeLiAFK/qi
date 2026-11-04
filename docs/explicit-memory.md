@@ -1,7 +1,7 @@
-# Explicit curated memory primitives
+# Explicit curated memory management
 
 This is a deliberately narrow implementation of design-plan section 9.4. It is
-**storage infrastructure, not a finished memory UI or model capability**. Normal
+**authenticated local CRUD management, not a model memory capability**. Normal
 sessions, tasks, transcripts, provider requests, and context building do not read
 or write these records. There is no automatic extraction, inference, background
 learning, embedding service, FTS index, or cross-task recall.
@@ -39,18 +39,37 @@ does not delete its facts. Global records remain user-managed independently.
 bounded audit locator, not proof that the referenced message exists or authorizes
 an action. SourceRef likewise does not establish that a fact was verified. These
 low-level methods are for trusted control-plane callers, not model tool exposure.
-A future UI/API integration must authenticate the user, resolve source and approval
-evidence, verify approval of the exact fact and scope and its current validity, apply its permission policy,
-and reject credentials/sensitive content before calling a write. Approval freshness
-must be checked against the actual user evidence, including revocations and older
-references: storage only rejects reuse of the immediately current approval
-reference during an edit, and does not authenticate references or prevent reuse
-of a reference from an older version. A different string is not fresh approval.
-Deletion must
-also be explicitly user-authorized by that caller. Merely setting confidentiality
-to `private` cannot make sensitive content safe. No semantic secret detector is
-claimed here; sensitive/secret classification values are refused, but dishonest
-or incorrect classifications cannot be detected by storage.
+The `/memory` page and `/api/memory` endpoint require the same single-owner
+authentication as tasks. Every mutation requires exact same-origin verification,
+`X-Qi-Request: 1`, JSON and explicit `confirm: true`. Writes additionally require
+`non_sensitive: true`; the UI asks the owner to review the exact content and scope.
+The source is a user assertion, not a fetched or independently verified document.
+A fresh server-generated `web-owner:` approval reference identifies the accepted
+request. Client-supplied approval references are rejected. This reference is
+an audit label, not a reusable authorization token or signed proof of consent.
+Authentication plus the explicit current request is the authorization boundary.
+There is no transcript-derived or model-generated approval path.
+
+The page starts with no scope selected. Choose one existing task (including
+archived tasks), or explicitly choose global. Create, inspect current records,
+inspect all revisions, edit with the current revision, or confirm deletion of all
+revisions. Scope cannot change during edit. A changed form clears its approval
+checkbox. Navigation cancels the edit and clears its contents. Responses from an
+older scope selection cannot populate the new scope. Browser-session mode has
+a local sign-out button. Same-origin tabs broadcast logout without content;
+focus, pageshow, visibility and 30-second checks revalidate authentication.
+The protected view hides synchronously during revalidation; a five-second deadline
+covers both the response and JSON body, aborts timed-out requests and fails closed.
+Detected logout/expiry clears record contents, drafts and scope labels. Basic
+Auth remains browser-managed and cannot be logged out by this page. Failed writes are never
+retried automatically: reload and inspect before making another decision, since
+a lost response may follow a committed mutation. Creates are not idempotent;
+manually resubmitting the same content can create duplicates.
+
+Classification is metadata, not semantic content validation or access control.
+Sensitive/secret classification values and missing owner declarations are refused,
+but dishonest or mistaken declarations cannot be detected. No semantic secret
+filter is claimed. Do not store credentials or sensitive personal information.
 
 Before including any record in a provider request, a future context builder must
 obtain explicit selection for the destination task and identify that provider
@@ -95,5 +114,11 @@ edit-versus-delete across connections, and injected create/edit/delete failures
 that must roll back atomically. Tests also cover malformed/oversized IDs,
 all-or-nothing mixed retrieval, and ignored UPDATE/DELETE operations that must
 fail rather than report a successful mutation. Full repository tests
-remain the integration gate. No HTTP endpoint, CLI, browser UI, model tool or
-external data integration has been added by this slice.
+remain the integration gate. `go test ./internal/webui` covers authenticated
+CRUD, explicit confirmation, server-generated approval labels, scope isolation,
+revision conflicts and deletion of all live versions. `node --test
+internal/webui/memory_test.cjs` tests scope switching, repeated clicks, cancellation,
+confirmation invalidation and expired-session clearing. No CLI, model tool or
+provider/context integration is included. Per-turn selection with exact provider
+disclosure and queue-safe consent remains future work; saving a record never
+sends it to a model.
