@@ -264,3 +264,38 @@ func TestPanicFailsOnlyItsTask(t *testing.T) {
 		t.Fatal(got.Status)
 	}
 }
+
+func TestListReturnsOnlyMetadata(t *testing.T) {
+	e, s := fixture(t, func(string) (*agent.Agent, error) {
+		return &agent.Agent{Model: modelFunc(func(context.Context, []agent.Message, []agent.ToolDefinition) (agent.Message, error) {
+			return agent.Message{Content: "private reply"}, nil
+		})}, nil
+	})
+	ctx := context.Background()
+	task, _ := e.Create(ctx, "Metadata")
+	run, err := e.Start(ctx, task.ID, "private prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait(t, e, task.ID)
+	// A malformed historical card would break a detail Get. A metadata List must
+	// not inspect it, regardless of how much event history has accumulated.
+	for i := 0; i < 100; i++ {
+		if _, err := s.AppendEvent(ctx, task.ID, run.ID, "card", []byte(`{"revision":"invalid"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := e.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Status != "completed" {
+		t.Fatal(list)
+	}
+	if list[0].Messages != nil || list[0].Cards != nil || list[0].Runs != nil {
+		t.Fatal("list contains full task data")
+	}
+	if _, err := e.Get(ctx, task.ID); err == nil {
+		t.Fatal("expected malformed detail fixture to fail")
+	}
+}

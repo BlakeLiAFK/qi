@@ -10,13 +10,7 @@ import (
 type EngineBackend struct{ Engine *tasks.Engine }
 
 func (b EngineBackend) List(ctx context.Context) ([]Task, error) {
-	items, err := b.Engine.List(ctx)
-	for i := range items {
-		items[i].Messages = nil
-		items[i].Cards = nil
-		items[i].Runs = nil
-	}
-	return items, err
+	return b.Engine.List(ctx)
 }
 func (b EngineBackend) Create(ctx context.Context, title string) (Task, error) {
 	return b.Engine.Create(ctx, title)

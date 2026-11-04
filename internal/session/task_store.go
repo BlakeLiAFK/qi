@@ -39,6 +39,7 @@ func (s *Store) initTasks() error {
 		`CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), status TEXT NOT NULL CHECK(status IN ('running','completed','failed','cancelled','interrupted')), error TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, finished_at TEXT NOT NULL DEFAULT '', UNIQUE(id,session_id))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS one_running_per_session ON runs(session_id) WHERE status='running'`,
 		`CREATE INDEX IF NOT EXISTS runs_by_session ON runs(session_id,started_at)`,
+		`CREATE INDEX IF NOT EXISTS latest_run_by_session ON runs(session_id,started_at DESC,id DESC)`,
 		`CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), run_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(run_id,session_id) REFERENCES runs(id,session_id))`,
 		`CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id,id)`,
 	} {

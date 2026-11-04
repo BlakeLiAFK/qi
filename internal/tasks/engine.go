@@ -94,6 +94,10 @@ func New(ctx context.Context, s *session.Store, cfg Config) (*Engine, error) {
 		release()
 		return nil, err
 	}
+	if err := s.InterruptApprovals(ctx); err != nil {
+		release()
+		return nil, err
+	}
 	return &Engine{store: s, cfg: cfg, active: map[string]*active{}, release: release}, nil
 }
 func (e *Engine) Create(ctx context.Context, title string) (Task, error) {
@@ -122,18 +126,16 @@ func (e *Engine) Create(ctx context.Context, title string) (Task, error) {
 	}
 	return Task{ID: s.ID, Title: s.Title, Status: "idle", CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, Messages: []agent.Message{}, Runs: []Run{}, Cards: []Card{}}, nil
 }
+
+// List returns metadata only. Fetch a single task with Get for its conversation.
 func (e *Engine) List(ctx context.Context) ([]Task, error) {
-	sessions, err := e.store.List(ctx)
+	metadata, err := e.store.ListTaskMetadata(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]Task, 0, len(sessions))
-	for _, s := range sessions {
-		t, err := e.Get(ctx, s.ID)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, t)
+	result := make([]Task, 0, len(metadata))
+	for _, item := range metadata {
+		result = append(result, Task{ID: item.ID, Title: item.Title, Status: item.Status, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
 	}
 	return result, nil
 }
