@@ -246,7 +246,7 @@ func inspectBackup(ctx context.Context, path string) (BackupReport, error) {
 	report := BackupReport{Tables: map[string]int64{}}
 	// Static names only. Optional tables vary with schema age and enabled features.
 	// Require the core conversation tables, but never migrate older snapshots.
-	for _, table := range []string{"sessions", "messages", "runs", "events", "approvals", "curated_memory", "curated_memory_versions", "turn_memory", "admission_keys", "task_creation_keys", "artifacts"} {
+	for _, table := range []string{"sessions", "messages", "runs", "events", "approvals", "curated_memory", "curated_memory_versions", "turn_memory", "admission_keys", "task_creation_keys", "task_results", "task_result_reads", "artifacts"} {
 		var exists int
 		if err = db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&exists); err != nil {
 			return BackupReport{}, err

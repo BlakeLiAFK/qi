@@ -106,6 +106,8 @@ validated without changing its mode or ownership. Unsafe ancestors are rejected
 without creating child directories. Use `qi serve -db /private/path/tasks.db` to
 change the database location; its private parent directory must already exist. Stored prompts and outputs are plaintext,
 not encrypted: keep the database, WAL, and backups private and outside your repository.
+The task list marks unread terminal results; [read-state semantics](docs/unread-results.md)
+explain exact-run acknowledgments and the shared single-owner watermark.
 Use explicit `qi backup` and `qi backup-verify` commands for consistent local snapshots;
 see [database backup and verification](docs/database-backup.md).
 

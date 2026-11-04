@@ -58,6 +58,9 @@ type ContextNotice struct {
 	InputBytes      int    `json:"input_bytes"`
 }
 type Task struct {
+	UnreadResult       bool                                 `json:"unread_result"`
+	UnreadRunID        string                               `json:"unread_run_id,omitempty"`
+	TerminalRunID      string                               `json:"terminal_run_id,omitempty"`
 	Archived           bool                                 `json:"archived"`
 	LiveText           *LiveText                            `json:"live_text,omitempty"`
 	ContextNotice      *ContextNotice                       `json:"context_notice,omitempty"`
@@ -189,7 +192,7 @@ func (e *Engine) ListArchived(ctx context.Context, archived bool) ([]Task, error
 	}
 	result := make([]Task, 0, len(metadata))
 	for _, item := range metadata {
-		result = append(result, Task{Archived: item.Archived, ID: item.ID, Title: item.Title, Status: item.Status, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
+		result = append(result, Task{UnreadResult: item.UnreadResult, UnreadRunID: item.UnreadRunID, Archived: item.Archived, ID: item.ID, Title: item.Title, Status: item.Status, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt})
 	}
 	return result, nil
 }
@@ -199,7 +202,7 @@ func (e *Engine) Get(ctx context.Context, id string) (Task, error) {
 		return Task{}, err
 	}
 	s, history, runs, events := snapshot.Session, snapshot.Messages, snapshot.Runs, snapshot.Events
-	t := Task{Archived: s.Archived, ID: id, Title: s.Title, Status: "idle", CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, Messages: history, Runs: runs, Cards: []Card{}}
+	t := Task{UnreadResult: snapshot.ResultRead.Unread, UnreadRunID: snapshot.ResultRead.UnreadRunID, TerminalRunID: snapshot.ResultRead.TerminalRunID, Archived: s.Archived, ID: id, Title: s.Title, Status: "idle", CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, Messages: history, Runs: runs, Cards: []Card{}}
 	for _, r := range runs {
 		if r.StartedAt.After(t.UpdatedAt) {
 			t.UpdatedAt = r.StartedAt

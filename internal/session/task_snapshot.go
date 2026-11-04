@@ -13,9 +13,10 @@ import (
 // TaskSnapshot contains one consistent SQLite snapshot. In particular, a
 // completed run cannot be paired with history read before its final response.
 type TaskSnapshot struct {
-	Session  Session
-	Messages []agent.Message
-	Runs     []Run
+	ResultRead ResultReadState
+	Session    Session
+	Messages   []agent.Message
+	Runs       []Run
 	// Events is a UI projection, not the audit log. Use Store.Events for replay.
 	Events []Event
 }
@@ -47,6 +48,10 @@ func readTaskSnapshot(ctx context.Context, q snapshotReader, id string) (TaskSna
 	result := TaskSnapshot{Messages: []agent.Message{}, Runs: []Run{}, Events: []Event{}}
 	var err error
 	result.Session, err = scanSession(q.QueryRowContext(ctx, "SELECT id,title,created_at,updated_at,revision,archived FROM sessions WHERE id=?", id))
+	if err != nil {
+		return TaskSnapshot{}, err
+	}
+	result.ResultRead, err = readResultState(ctx, q, id)
 	if err != nil {
 		return TaskSnapshot{}, err
 	}

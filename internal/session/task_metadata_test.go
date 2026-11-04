@@ -87,6 +87,7 @@ func TestTaskMetadataDoesNotReadConversationPayloads(t *testing.T) {
 	}
 	defer rows.Close()
 	indexed := false
+	resultIndexed := false
 	for rows.Next() {
 		var id, parent, unused int
 		var detail string
@@ -97,12 +98,18 @@ func TestTaskMetadataDoesNotReadConversationPayloads(t *testing.T) {
 		if strings.Contains(lower, "messages") || strings.Contains(lower, "events") {
 			t.Fatal(detail)
 		}
+		if strings.Contains(detail, "task_results_by_task") {
+			resultIndexed = true
+		}
 		if strings.Contains(detail, "latest_run_by_session") {
 			indexed = true
 		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
+	}
+	if !resultIndexed {
+		t.Fatal("latest terminal result lookup lost its index")
 	}
 	if !indexed {
 		t.Fatal("latest-run lookup lost its index")

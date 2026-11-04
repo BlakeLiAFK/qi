@@ -414,6 +414,10 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		respond(w, task)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "read-result" {
+		s.readResult(w, r, id)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "archive" {
 		s.archive(w, r, id)
 		return

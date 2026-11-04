@@ -136,6 +136,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("initialize curated memory: %w", err)
 	}
+	if err = s.initResultRead(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize result read state: %w", err)
+	}
 	if err = ValidatePrivateStorage(absolute); err != nil {
 		db.Close()
 		return nil, err

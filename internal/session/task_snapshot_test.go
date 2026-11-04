@@ -89,7 +89,7 @@ func TestTaskSnapshotCompletionBetweenHistoryAndStatus(t *testing.T) {
 				t.Fatalf("bad fixture: %+v", snapshot)
 			}
 			if transactional {
-				if snapshot.Runs[0].Status != "running" || len(snapshot.Events) != 0 {
+				if snapshot.Runs[0].Status != "running" || len(snapshot.Events) != 0 || snapshot.ResultRead.Unread || snapshot.ResultRead.TerminalRunID != "" {
 					t.Fatalf("mixed snapshot: %+v", snapshot)
 				}
 				if err := tx.Commit(); err != nil {
@@ -102,7 +102,7 @@ func TestTaskSnapshotCompletionBetweenHistoryAndStatus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(fresh.Messages) != 2 || fresh.Messages[1].Content != "final answer" || fresh.Runs[0].Status != "completed" || len(fresh.Events) != 1 {
+			if len(fresh.Messages) != 2 || fresh.Messages[1].Content != "final answer" || fresh.Runs[0].Status != "completed" || len(fresh.Events) != 1 || !fresh.ResultRead.Unread || fresh.ResultRead.TerminalRunID != run.ID {
 				t.Fatalf("new snapshot lost final response: %+v", fresh)
 			}
 		})

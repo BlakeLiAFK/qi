@@ -67,6 +67,11 @@ func (s *Store) EnsureQueueSchema(ctx context.Context) (resultErr error) {
 	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admission_keys (session_id TEXT NOT NULL, principal TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, accepted_run TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(session_id,principal,key), FOREIGN KEY(run_id,session_id) REFERENCES runs(id,session_id))`); err != nil {
 		return err
 	}
+	for _, query := range []string{resultUpdateTrigger, resultInsertTrigger} {
+		if _, err = tx.ExecContext(ctx, query); err != nil {
+			return err
+		}
+	}
 	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
 	if err != nil {
 		return err
