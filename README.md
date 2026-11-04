@@ -1,6 +1,6 @@
 # qi
 
-A small Go command-line assistant with an OpenAI-compatible model/tool loop,
+A small Go assistant with a persistent task WebUI and an OpenAI-compatible model/tool loop,
 explicitly configured MCP stdio plugins, and optional Codex/Claude coding workers.
 This is an early implementation, not feature parity with Pi or a production sandbox.
 
@@ -19,12 +19,56 @@ export OPENAI_API_KEY='your-key'
 ```
 
 Interactive mode accepts one line per turn and `/quit` to exit. Conversation history
-is retained only in memory until exit. One-shot `-p` prints the final assistant text.
-Responses are buffered, not token-streamed. No SQLite storage, sessions on disk,
-automatic retries, context compaction, scheduling, or TUI is implemented.
+is retained only in memory until exit in standalone CLI mode. One-shot `-p` prints the final assistant text.
+Responses are buffered, not token-streamed. Standalone CLI mode has no sessions on disk.
+Automatic retries, context compaction, scheduling, and a TUI are not implemented.
 `-model` and `-base-url` override their environment variables. The API key may be
 omitted for compatible local servers. The model name must be explicitly supplied.
 Run `./qi -h` for flags. Diagnostics and permission prompts use stderr; answers use stdout.
+
+## Persistent task WebUI
+
+```sh
+# Generate a private token locally; do not commit it or put it in a URL.
+export QI_WEB_TOKEN="$(openssl rand -hex 32)"
+export OPENAI_MODEL='your-model'
+export OPENAI_API_KEY='your-key'
+./qi serve
+```
+
+Open `http://127.0.0.1:8686` and sign in with username `qi` and your
+`QI_WEB_TOKEN` as the password. The token must have at least 32 characters and
+is read only from the environment, never a command-line flag. The browser may
+cache Basic Auth credentials; close its session when using a shared computer.
+Treat the token as full access to all tasks and model usage. This is single-user
+authentication, not multi-user accounts or role-based access.
+
+The WebUI creates independent tasks, posts asynchronous model turns, displays
+persisted conversation/run state, and cancels active turns. Each task gets its own
+history; concurrent tasks do not share model context. SQLite stores task messages,
+run records, and events, with WAL and committed-write recovery. One engine owns a
+database at a time. After an unclean restart, abandoned runs become interrupted;
+work is not silently replayed. The default database is `qi/tasks.db` within the OS
+user config directory. Use `qi serve -db /private/path/tasks.db` to change it;
+the parent directory must already exist. Stored prompts and outputs are plaintext,
+not encrypted: keep the database, WAL, and backups private and outside your repository.
+
+The server supports **model chat only**. MCP plugins and coding workers are not
+exposed over the WebUI. Card decisions are recorded state, not executable tool
+approval or an automatic resume mechanism. The standalone CLI/REPL currently
+runs separately and does **not** attach to the daemon or share WebUI tasks.
+
+The listener accepts only literal loopback IP addresses. For another local port,
+use `-listen 127.0.0.1:9000`. `-origin` sets one exact browser origin, without a
+trailing slash; it defaults to the actual HTTP listen address. Host and origin
+must match, and writes need the same-origin request marker. Remote access needs
+an independently configured HTTPS reverse proxy on the same machine, forwarding
+the original Host header, with `-origin https://your-private-host`. Do not expose
+cleartext HTTP or log Authorization headers. Proxy setup, TLS, public deployment,
+and firewall rules are not automated by qi.
+
+`qi serve -h` lists server options. Ctrl-C or SIGTERM shuts down the server and
+cancels active runs. The UI polls state; it does not stream model tokens.
 
 ## MCP plugins
 

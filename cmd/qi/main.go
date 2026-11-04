@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopi/internal/agent"
@@ -23,7 +24,7 @@ import (
 )
 
 func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, os.Getenv); err != nil {
 		fmt.Fprintln(os.Stderr, "qi:", err)
@@ -68,8 +69,15 @@ func readPlugins(path string) ([]pluginEntry, error) {
 }
 
 func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.Writer, env func(string) string) error {
+	if len(args) > 0 && args[0] == "serve" {
+		return runServer(ctx, args[1:], diagnostics, env)
+	}
 	fs := flag.NewFlagSet("qi", flag.ContinueOnError)
 	fs.SetOutput(diagnostics)
+	fs.Usage = func() {
+		fmt.Fprintln(diagnostics, "Usage: qi [flags] | qi serve [flags]\nRun qi serve -h for persistent WebUI server options.")
+		fs.PrintDefaults()
+	}
 	prompt := fs.String("p", "", "one-shot prompt (otherwise interactive, one line per turn)")
 	model := fs.String("model", env("OPENAI_MODEL"), "model name (or OPENAI_MODEL; required)")
 	base := fs.String("base-url", env("OPENAI_BASE_URL"), "OpenAI-compatible API root (default https://api.openai.com/v1)")
