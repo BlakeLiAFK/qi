@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>qi · Saved memory</title><link rel="stylesheet" href="/style.css"><script src="/memory.js" defer></script></head>
+<body class="memory-page"><aside><a class="brand" href="/">qi</a><p>Saved memory</p><a href="/">Back to tasks</a></aside><main>
+<header><h1>Saved memory</h1><button id="memory-logout" type="button" hidden>Sign out</button></header>
+<p>Optional local records you create yourself. Nothing here is extracted automatically or sent to a model. Using saved memory in model turns is not available yet.</p>
+<p>Do not save passwords, credentials, sensitive personal information or private information about children. Records and older revisions are stored as plaintext in the local database.</p>
+<p id="memory-error" role="alert" hidden></p>
+<section id="memory-protected" hidden>
+<label for="memory-scope">Choose one scope to inspect</label><select id="memory-scope"><option value="">Choose a scope…</option><option value="global">Global (management only, never automatic sharing)</option></select>
+<button id="memory-reload" type="button">Reload records</button>
+<section id="memory-list" aria-label="Saved records"></section>
+<form id="memory-form" hidden>
+<h2 id="memory-heading">Create a record</h2><p id="memory-target"></p>
+<label for="memory-content">Content (up to 4,096 UTF-8 bytes)</label><textarea id="memory-content" rows="3" maxlength="4096" required></textarea>
+<label for="memory-source">Source or provenance (your description, not independently verified)</label><input id="memory-source" maxlength="512" required>
+<label for="memory-kind">Kind</label><select id="memory-kind"><option value="preference">Preference</option><option value="verified">Verified (your assertion)</option><option value="inferred">Inferred</option></select>
+<label for="memory-confidence">Confidence (0 to 1, your estimate)</label><input id="memory-confidence" type="number" min="0" max="1" step="0.01" value="1" required>
+<label for="memory-private">Classification (metadata, not access control)</label><select id="memory-private"><option value="private">Private</option><option value="public">Public</option></select>
+<label for="memory-expiry">Optional expiry (UTC ISO timestamp, e.g. 2027-01-01T00:00:00Z)</label><input id="memory-expiry" placeholder="No expiry">
+<label><input id="memory-confirm" type="checkbox" required> I approve saving this exact content in the scope shown above, and confirm it contains no sensitive information or credentials.</label>
+<button id="memory-save" type="submit">Save this record locally</button><button id="memory-cancel" type="button">Cancel edit / clear form</button>
+</form>
+</section>
+<p>Deletion removes all revisions from live memory queries. It does not erase SQLite free pages, WAL files, backups, exports or existing conversations. No forensic erasure is promised.</p>
+</main></body></html>

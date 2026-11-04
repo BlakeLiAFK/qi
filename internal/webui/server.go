@@ -195,12 +195,15 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/", "/app.js", "/style.css":
+	case "/", "/app.js", "/style.css", "/memory", "/memory.js":
 		if r.Method != "GET" {
 			http.Error(w, "method not allowed", 405)
 			return
 		}
 		name := r.URL.Path[1:]
+		if name == "memory" {
+			name = "memory.html"
+		}
 		if name == "" {
 			name = "index.html"
 		}
@@ -209,7 +212,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "asset unavailable", 500)
 			return
 		}
-		contentType := map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}
+		contentType := map[string]string{"memory.html": "text/html; charset=utf-8", "memory.js": "text/javascript; charset=utf-8", "index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}
 		w.Header().Set("Content-Type", contentType[name])
 		w.Write(b)
 	case "/api/auth":
@@ -231,6 +234,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		respond(w, items)
+	case "/api/memory":
+		s.memory(w, r)
 	case "/api/tasks":
 		s.tasks(w, r)
 	default:

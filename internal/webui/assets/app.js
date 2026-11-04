@@ -198,8 +198,8 @@ async function loadAuth(){
  try{const auth=await api('/api/auth');sessionAuth=auth.session_auth===true;$('auth-controls').hidden=!sessionAuth;}
  catch(e){$('auth-controls').hidden=true;error(e);}
 }
-function finishSignOut(){
- if(loggedOut)return;loggedOut=true;watchTask(null);selected=null;taskDrafts.clear();questionDrafts.clear();pendingSubmissions.clear();version='';
+function finishSignOut(notify=true){
+ if(loggedOut)return;if(notify)broadcastSignOut();loggedOut=true;watchTask(null);selected=null;taskDrafts.clear();questionDrafts.clear();pendingSubmissions.clear();version='';
  try{const keys=[];for(let i=0;i<sessionStorage.length;i++){const key=sessionStorage.key(i);if(key&&key.startsWith('qi-submission:'))keys.push(key);}for(const key of keys)sessionStorage.removeItem(key);}catch(_){}
  clearSkills();skillControls=[];$('skills').replaceChildren();$('skill-picker').hidden=true;$('prompt').value='';$('prompt').readOnly=true;$('send').disabled=true;$('cancel').hidden=true;$('conversation').replaceChildren();$('tasks').replaceChildren();$('archive-task').hidden=true;showArchived=false;selectedArchived=false;$('show-archived').checked=false;$('task-title').textContent='Signed out';$('status').textContent='';$('error').hidden=true;$('auth-controls').hidden=true;
  if(typeof location!=='undefined')location.replace('/login');
@@ -235,3 +235,9 @@ $('archive-task').onclick=async()=>{
  }catch(e){error(e);}
  finally{archiveBusy=false;await refresh();}
 };
+
+// Same-origin tabs share the browser session. Never send protected content.
+let logoutChannel=null;
+try{if(typeof BroadcastChannel!=='undefined'){logoutChannel=new BroadcastChannel('qi-auth');logoutChannel.onmessage=event=>{if(event.data==='logout'&&sessionAuth)finishSignOut(false);};}}catch(_){}
+function broadcastSignOut(){try{if(logoutChannel)logoutChannel.postMessage('logout');}catch(_){}try{localStorage.setItem('qi-logout',String(Date.now()));}catch(_){}}
+if(typeof addEventListener==='function')addEventListener('storage',event=>{if(event.key==='qi-logout'&&sessionAuth)finishSignOut(false);});
