@@ -1,0 +1,7 @@
+[
+  {
+    "name": "textstats",
+    "command": "./examples/textstats/bin/textstats",
+    "dir": "."
+  }
+]

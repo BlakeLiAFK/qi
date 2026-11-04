@@ -1,0 +1,19 @@
+[
+  {
+    "name": "textstats",
+    "command": "./examples/textstats/bin/textstats",
+    "dir": ".",
+    "tools": [
+      {
+        "name": "text_stats",
+        "description": "Count Unicode characters and whitespace-separated words in supplied text, without reading files or using the network.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {"text": {"type": "string", "maxLength": 4096}},
+          "required": ["text"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+]

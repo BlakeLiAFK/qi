@@ -533,6 +533,9 @@ automatic background polling or guarantee that a model waits for task completion
 
 ## Development
 
+For a complete, runnable Go MCP plugin and configuration examples, see [examples/textstats](examples/textstats/README.md).
+
+
 ```sh
 go test ./...
 go test -race ./...
