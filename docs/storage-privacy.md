@@ -55,3 +55,45 @@ Tests cover public existing databases without mutation, unsafe parent directory
 rejection before file creation, all sidecar classes, symbolic/hard links,
 nonregular files, foreign ownership, writable ancestors, private SQLite WAL/SHM,
 private legacy migrations, process ownership and crash-release behavior.
+
+### Requirements before enabling Windows persistence
+
+Windows persistence remains disabled. The existing Go `0700` directory and
+`0600` file modes do not create a private Windows DACL. A post-open ACL check is
+not sufficient: SQLite may already have written sensitive data to a database or
+sidecar with inherited access. Cross-compiling does not establish privacy.
+
+A future implementation needs all of the following, with native Windows tests:
+
+- Query the effective account SID and security descriptors using the official
+  `golang.org/x/sys/windows` APIs (`Token.GetTokenUser`, `GetSecurityInfo`,
+  descriptor `Owner`/`DACL` and `GetAce`), checking errors and descriptor validity.
+  Validate object ownership as well as access grants. Do not assume that an
+  account name, Unix UID or mode bits establishes ownership.
+- Define an explicit trusted-principal policy for the current account and OS
+  administrators. Reject absent/null DACLs (which allow access), foreign owners,
+  untrusted allow ACEs, and ACE types or inheritance rules the validator cannot
+  safely interpret. An empty DACL denies access and is different from a null
+  DACL. Deny ACEs must not be treated as proof that a broad allow ACE is safe.
+- Atomically create the dedicated directory and database with a private security
+  descriptor, rather than create broadly and then repair permissions. Validate
+  inherited permissions for newly created files and subdirectories, including
+  creator-owner substitution and inherit-only ACEs. SQLite-created WAL, SHM,
+  rollback journals and engine lock files must be private from creation, not
+  merely checked after writes. Never rewrite existing user ACLs silently.
+- Inspect opened handles to reject reparse points, junctions, nonregular files
+  and multiple hard links, including unsafe ancestors. Ancestor policy must
+  account for delete-child, create-child, write-DACL and owner-changing rights,
+  not just file read/write permissions. Reject unsupported filesystems, network
+  paths or security-query failures rather than assuming local NTFS semantics.
+- Verify Windows SQLite path/URI handling, file sharing, engine locking and
+  crash-release behavior. A new ACL validator alone does not establish these.
+
+The acceptance suite must exercise real Windows ACLs under distinct user
+accounts, permissive inherited ACLs, protected private ACLs, null and empty
+DACLs, inheritance-only grants, broad groups, foreign owners, links/reparse
+points, sidecar creation and recreation, process races, and crash recovery.
+Portable unit tests of a future ACL policy should additionally cover malformed
+or unsupported ACEs. Until that implementation and runtime evidence exist, the
+unsupported-platform regression tests require rejection without creating a
+new database/directory or changing existing database and sidecar contents.
