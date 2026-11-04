@@ -54,6 +54,16 @@ func TestMCPTaskHelper(t *testing.T) {
 			os.Exit(3)
 		} // discovery is forbidden
 		if req.Method == "tools/call" {
+			calls, err := os.OpenFile(marker+".calls", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				os.Exit(4)
+			}
+			if _, err = calls.WriteString("call\n"); err != nil {
+				os.Exit(5)
+			}
+			if err = calls.Close(); err != nil {
+				os.Exit(6)
+			}
 			if req.Params.Arguments.Hang {
 				continue
 			}
@@ -177,10 +187,33 @@ func TestMCPDeniedExpiredCancelledDoNotStart(t *testing.T) {
 func TestMCPUnknownOutcomesNotReplayed(t *testing.T) {
 	for _, args := range []string{`{"hang":true}`, `{"fail":true}`} {
 		t.Run(args, func(t *testing.T) {
-			e, s, task, marker := mcpFixture(t, args, time.Minute, 150*time.Millisecond)
+			e, s, task, marker := mcpFixture(t, args, 5*time.Minute, time.Minute)
 			a := awaitApproval(t, e, task.ID)
 			if _, err := e.DecideApproval(context.Background(), task.ID, ApprovalDecision{ID: a.ID, Revision: a.Revision, Digest: a.Digest, Allow: true}); err != nil {
 				t.Fatal(err)
+			}
+			// Synchronize with dispatch, not a wall-clock startup guess. A
+			// deadline spanning process startup may expire before the helper
+			// runs at all under race instrumentation or a busy test host.
+			deadline := time.Now().Add(30 * time.Second)
+			var calls []byte
+			for time.Now().Before(deadline) {
+				calls, _ = os.ReadFile(marker + ".calls")
+				if string(calls) == "call\n" {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if string(calls) != "call\n" {
+				t.Fatalf("helper did not receive exactly one call: %q", calls)
+			}
+			if args == `{"hang":true}` {
+				// Exercise cancellation after receipt deterministically.
+				// plugins.TestCallTimeoutIsUnknown covers a request deadline
+				// created after MCP initialization, independently of startup.
+				if err := e.Cancel(context.Background(), task.ID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			wait(t, e, task.ID)
 			got, _ := s.GetApproval(context.Background(), task.ID, a.ID)
@@ -190,6 +223,10 @@ func TestMCPUnknownOutcomesNotReplayed(t *testing.T) {
 			content, _ := os.ReadFile(marker)
 			if string(content) != "start\n" {
 				t.Fatalf("unexpected startup/replay: %q", content)
+			}
+			calls, _ = os.ReadFile(marker + ".calls")
+			if string(calls) != "call\n" {
+				t.Fatalf("unexpected call replay: %q", calls)
 			}
 		})
 	}

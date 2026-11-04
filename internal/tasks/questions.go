@@ -13,7 +13,7 @@ import (
 )
 
 // QuestionAnswer records user input only. It never grants tool permission or
-// resumes a run. The model may retrieve answers on a later, user-started turn.
+// resumes a run. A separate Continue task action starts a user-requested turn.
 type QuestionAnswer struct {
 	ChoiceID   string    `json:"choice_id,omitempty"`
 	Text       string    `json:"text,omitempty"`
@@ -94,7 +94,7 @@ type questionTool struct {
 }
 
 func (q questionTool) Definition() agent.ToolDefinition {
-	return agent.ToolDefinition{Name: "ask_user_question", Description: "Create a task-local choice or text question card. This only records a question, does not pause or resume the run, and never authorizes external actions. Finish your turn and ask the user to answer then send a message to continue. Use a unique ID per question. Do not request secrets.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["id","title","input_type"],"properties":{"id":{"type":"string"},"title":{"type":"string"},"summary":{"type":"string"},"input_type":{"type":"string","enum":["choice","text"]},"choices":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","label"],"properties":{"id":{"type":"string"},"label":{"type":"string"}}}},"expires_at":{"type":"string","format":"date-time"}}}`)}
+	return agent.ToolDefinition{Name: "ask_user_question", Description: "Create a task-local choice or text question card. This only records a question, does not pause or resume the run, and never authorizes external actions. Finish your turn and ask the user to answer then use Continue task on the answered card. Use a unique ID per question. Do not request secrets.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["id","title","input_type"],"properties":{"id":{"type":"string"},"title":{"type":"string"},"summary":{"type":"string"},"input_type":{"type":"string","enum":["choice","text"]},"choices":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","label"],"properties":{"id":{"type":"string"},"label":{"type":"string"}}}},"expires_at":{"type":"string","format":"date-time"}}}`)}
 }
 func (q questionTool) Execute(ctx context.Context, raw json.RawMessage) (string, error) {
 	var input struct {
@@ -112,7 +112,7 @@ func (q questionTool) Execute(ctx context.Context, raw json.RawMessage) (string,
 	if err := q.engine.AddCard(ctx, q.taskID, q.runID, c); err != nil {
 		return "", err
 	}
-	return `{"recorded":true,"auto_resume":false,"instruction":"Wait for the user to answer the card and start another turn; use get_question_answers to read saved answers."}`, nil
+	return `{"recorded":true,"auto_resume":false,"instruction":"Wait for the user to answer the card and click Continue task on the answered card; use get_question_answers to read saved answers."}`, nil
 }
 
 type questionAnswersTool struct {

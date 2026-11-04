@@ -75,21 +75,25 @@ type Config struct {
 	Factory        func(taskID string) (*agent.Agent, error)
 	MaxTasks       int
 	MaxConcurrent  int
+	MaxQueued      int
 	MaxMessages    int
 	MaxPromptBytes int
 }
 type active struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel  context.CancelFunc
+	done    chan struct{}
+	run     Run
+	running bool
 }
 type Engine struct {
-	mu        sync.Mutex
-	store     *session.Store
-	cfg       Config
-	active    map[string]*active
-	closed    bool
-	release   func()
-	closeOnce sync.Once
+	mu          sync.Mutex
+	store       *session.Store
+	cfg         Config
+	active      map[string]*active
+	closed      bool
+	dispatchErr error
+	release     func()
+	closeOnce   sync.Once
 }
 
 // New recovers abandoned runs as interrupted. It never replays external work.
@@ -103,6 +107,9 @@ func New(ctx context.Context, s *session.Store, cfg Config) (*Engine, error) {
 	}
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 8
+	}
+	if cfg.MaxQueued <= 0 {
+		cfg.MaxQueued = 64
 	}
 	if cfg.MaxMessages <= 0 {
 		cfg.MaxMessages = 2000
@@ -121,6 +128,10 @@ func New(ctx context.Context, s *session.Store, cfg Config) (*Engine, error) {
 	}
 	release, err := s.AcquireEngineLock()
 	if err != nil {
+		return nil, err
+	}
+	if err := s.EnsureQueueSchema(ctx); err != nil {
+		release()
 		return nil, err
 	}
 	if err := s.InterruptRuns(ctx); err != nil {
@@ -246,42 +257,25 @@ func (e *Engine) Start(ctx context.Context, id, prompt string) (Run, error) {
 	if _, ok := e.active[id]; ok {
 		return Run{}, ErrBusy
 	}
-	if len(e.active) >= e.cfg.MaxConcurrent {
-		return Run{}, errors.New("concurrent task capacity reached")
+	if e.dispatchErr != nil {
+		return Run{}, e.dispatchErr
 	}
 	s, history, err := e.store.Load(ctx, id)
 	if err != nil {
 		return Run{}, err
 	}
-	if len(history) >= e.cfg.MaxMessages {
+	history = append(repairInterrupted(history), agent.Message{Role: "user", Content: prompt})
+	if len(history) > e.cfg.MaxMessages {
 		return Run{}, errors.New("task history capacity reached; create a new task")
 	}
-	runner, err := e.cfg.Factory(id)
+	run, err := e.store.AcceptQueued(ctx, id, s.Revision, history, "", nil, e.cfg.MaxQueued)
+	if errors.Is(err, session.ErrRunActive) {
+		return Run{}, ErrBusy
+	}
 	if err != nil {
 		return Run{}, err
 	}
-	if runner == nil {
-		return Run{}, errors.New("factory returned nil agent")
-	}
-	run, err := e.store.CreateRun(ctx, id)
-	if err != nil {
-		if errors.Is(err, session.ErrRunActive) {
-			return Run{}, ErrBusy
-		}
-		return Run{}, err
-	}
-	// Tool calls left unanswered by interruption receive an explicit unknown-result
-	// marker. They are never executed again by recovery.
-	history = repairInterrupted(history)
-	history = append(history, agent.Message{Role: "user", Content: prompt})
-	if err = e.store.SaveRevision(ctx, id, s.Revision, history); err != nil {
-		_ = e.store.FinishRun(context.Background(), run.ID, "failed", err.Error())
-		return Run{}, err
-	}
-	runCtx, cancel := context.WithCancel(context.Background())
-	a := &active{cancel: cancel, done: make(chan struct{})}
-	e.active[id] = a
-	go e.execute(runCtx, id, run, runner, history, s.Revision+1, a)
+	e.acceptLocked(run)
 	return run, nil
 }
 func repairInterrupted(history []agent.Message) []agent.Message {
@@ -313,12 +307,19 @@ func repairInterrupted(history []agent.Message) []agent.Message {
 	return result
 }
 func (e *Engine) execute(ctx context.Context, id string, run Run, runner *agent.Agent, history []agent.Message, revision int64, a *active) {
-	defer func() { a.cancel(); e.mu.Lock(); delete(e.active, id); close(a.done); e.mu.Unlock() }()
+	defer func() {
+		a.cancel()
+		e.mu.Lock()
+		delete(e.active, id)
+		close(a.done)
+		e.dispatchLocked()
+		e.mu.Unlock()
+	}()
 	// Revoke before publishing done, so callers cannot observe orphan approvals.
 	defer func() { _ = e.store.RevokeRunApprovals(context.Background(), id, run.ID) }()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			_ = e.store.FinishRun(context.Background(), run.ID, "failed", fmt.Sprintf("agent panic: %v", recovered))
+			e.finishExecution(run.ID, "failed", fmt.Sprintf("agent panic: %v", recovered))
 		}
 	}()
 	// Copy the runner so factories may safely return a template.
@@ -381,40 +382,81 @@ func (e *Engine) execute(ctx context.Context, id string, run Run, runner *agent.
 	}
 	// If this write fails, the durable run remains running and startup recovery
 	// marks it interrupted rather than claiming success.
-	_ = e.store.FinishRun(context.Background(), run.ID, status, errorText)
+	e.finishExecution(run.ID, status, errorText)
 }
 func (e *Engine) Cancel(ctx context.Context, id string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return ErrClosed
+	}
 	if _, err := e.store.Get(ctx, id); err != nil {
 		return err
 	}
 	if a := e.active[id]; a != nil {
-		a.cancel()
+		if !a.running {
+			if err := e.store.CancelQueued(ctx, id); err != nil {
+				return err
+			}
+			delete(e.active, id)
+			close(a.done)
+			e.dispatchLocked()
+		} else {
+			a.cancel()
+		}
+		return nil
 	}
-	return nil
+	// A fail-closed dispatcher may have released in-memory waiters while leaving
+	// queued admissions durable. Cancellation must still reach those rows.
+	return e.store.CancelQueued(ctx, id)
 }
 func (e *Engine) Wait(ctx context.Context, id string) error {
 	e.mu.Lock()
 	a := e.active[id]
+	dispatchErr := e.dispatchErr
 	e.mu.Unlock()
 	if a == nil {
-		return nil
+		return dispatchErr
 	}
 	select {
 	case <-a.done:
-		return nil
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.dispatchErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 func (e *Engine) Close() {
 	e.mu.Lock()
+	wasClosed := e.closed
 	e.closed = true
 	waiting := []chan struct{}{}
-	for _, a := range e.active {
-		a.cancel()
-		waiting = append(waiting, a.done)
+	for id, a := range e.active {
+		if !a.running {
+			if err := e.store.CancelQueued(context.Background(), id); err != nil {
+				e.dispatchErr = err
+			}
+			delete(e.active, id)
+			close(a.done)
+		} else {
+			a.cancel()
+			waiting = append(waiting, a.done)
+		}
+	}
+	// Dispatcher failures can leave durable queued admissions without in-memory
+	// waiters. Shutdown must cancel those too, rather than claiming a clean stop.
+	if !wasClosed {
+		queued, err := e.store.QueuedRuns(context.Background())
+		if err != nil {
+			e.dispatchErr = errors.Join(e.dispatchErr, err)
+		} else {
+			for _, run := range queued {
+				if err := e.store.CancelQueued(context.Background(), run.SessionID); err != nil {
+					e.dispatchErr = errors.Join(e.dispatchErr, err)
+				}
+			}
+		}
 	}
 	e.mu.Unlock()
 	for _, done := range waiting {
@@ -474,7 +516,7 @@ func (e *Engine) Act(ctx context.Context, id string, req ActionRequest) error {
 	if e.closed {
 		return ErrClosed
 	}
-	if req.Action != "approve" && req.Action != "reject" && req.Action != "answer" {
+	if req.Action != "approve" && req.Action != "reject" && req.Action != "answer" && req.Action != "continue" {
 		return errors.New("unsupported card action")
 	}
 	t, err := e.Get(ctx, id)
@@ -484,6 +526,9 @@ func (e *Engine) Act(ctx context.Context, id string, req ActionRequest) error {
 	for _, c := range t.Cards {
 		if c.ID != req.CardID {
 			continue
+		}
+		if req.Action == "continue" {
+			return e.continueQuestionLocked(ctx, id, req, t, c)
 		}
 		if c.Revision != req.Revision || c.State != "pending" {
 			return ErrStaleCard

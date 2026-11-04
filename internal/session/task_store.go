@@ -79,7 +79,7 @@ func (s *Store) FinishRun(ctx context.Context, runID, status, errorText string) 
 	default:
 		return errors.New("invalid terminal run status")
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE runs SET status=?,error=?,finished_at=? WHERE id=? AND status='running'`, status, errorText, time.Now().UTC().Format(timestampFormat), runID)
+	result, err := s.db.ExecContext(ctx, `UPDATE runs SET status=?,error=?,finished_at=? WHERE id=? AND status IN ('queued','running')`, status, errorText, time.Now().UTC().Format(timestampFormat), runID)
 	if err != nil {
 		return err
 	}
@@ -178,10 +178,10 @@ func (s *Store) Events(ctx context.Context, sessionID string, afterID int64) ([]
 	return result, rows.Err()
 }
 
-// InterruptRuns marks abandoned runs after an exclusive-owner process restart.
+// InterruptRuns marks abandoned queued/running work after an exclusive-owner restart.
 // Do not call while another process is executing runs in this database. This
 // never retries external effects whose outcome may be unknown after a crash.
 func (s *Store) InterruptRuns(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE runs SET status='interrupted',error='process stopped before run completion; external tool outcomes may be unknown',finished_at=? WHERE status='running'`, time.Now().UTC().Format(timestampFormat))
+	_, err := s.db.ExecContext(ctx, `UPDATE runs SET status='interrupted',error='process stopped before run completion; external tool outcomes may be unknown',finished_at=? WHERE status IN ('queued','running')`, time.Now().UTC().Format(timestampFormat))
 	return err
 }
