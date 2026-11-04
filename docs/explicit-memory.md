@@ -65,6 +65,17 @@ retried automatically: reload and inspect before making another decision, since
 a lost response may follow a committed mutation. Creates are not idempotent;
 manually resubmitting the same content can create duplicates.
 
+The management page can filter the currently chosen scope’s loaded current records
+by a case-insensitive literal substring in content or source. Whitespace around
+the query is ignored. The result count describes only that bounded loaded list
+(at most 1,024 records), not an all-scope search. Metadata and older revisions are
+not searched. Typing sends no network request and does not select records, change
+an edit or its approval, or disclose anything to a model. The turn-composer
+selection picker is unchanged. Switching scopes clears the query and cached
+results; reloads and mutation completion discard cached records before fetching
+fresh data. Old list and revision responses cannot repopulate a newer filtered
+view. Logout clears the filter and cached records.
+
 Classification is metadata, not semantic content validation or access control.
 Sensitive/secret classification values and missing owner declarations are refused,
 but dishonest or mistaken declarations cannot be detected. No semantic secret

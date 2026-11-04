@@ -8,6 +8,10 @@
 <section id="memory-protected" hidden>
 <label for="memory-scope">Choose one scope to inspect</label><select id="memory-scope"><option value="">Choose a scope…</option><option value="global">Global (management only, never automatic sharing)</option></select>
 <button id="memory-reload" type="button">Reload records</button>
+<label for="memory-filter">Filter loaded records by content or source</label>
+<input id="memory-filter" type="search" maxlength="512" autocomplete="off" disabled aria-describedby="memory-filter-help memory-filter-status">
+<p id="memory-filter-help">Local, case-insensitive text matching in the chosen scope’s loaded records only. Does not search older revisions, select facts, or send anything to a model.</p>
+<p id="memory-filter-status" role="status" aria-live="polite"></p>
 <section id="memory-list" aria-label="Saved records"></section>
 <form id="memory-form" hidden>
 <h2 id="memory-heading">Create a record</h2><p id="memory-target"></p>

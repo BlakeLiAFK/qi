@@ -1,25 +1,56 @@
 'use strict';
 const $=id=>document.getElementById(id);
 let generation=0, editing=null, saving=false, ended=false, sessionAuth=false, checkingAuth=false, signingOut=false;
+let loadedRecords=[],loadedQuery='',loaded=false,viewGeneration=0;
 const node=(tag,text)=>{const n=document.createElement(tag);n.textContent=text;return n;};
 function scopeQuery(){const value=$('memory-scope').value;return value==='global'?'global=true':value.startsWith('task:')?'task_id='+encodeURIComponent(value.slice(5)):'';}
-function endSession(){ended=true;$('memory-protected').hidden=true;$('memory-logout').hidden=true;++generation;clearForm();$('memory-list').replaceChildren();$('memory-form').hidden=true;$('memory-scope').value='';$('memory-scope').replaceChildren();$('memory-target').textContent='';setBusy(false);}
+function endSession(){ended=true;clearLoadedRecords(true);$('memory-protected').hidden=true;$('memory-logout').hidden=true;++generation;clearForm();$('memory-list').replaceChildren();$('memory-form').hidden=true;$('memory-scope').value='';$('memory-scope').replaceChildren();$('memory-target').textContent='';setBusy(false);}
 function failure(e){$('memory-error').textContent=e.message||String(e);$('memory-error').hidden=false;}
 async function api(query,body){const response=await fetch('/api/memory?'+query,{method:body===undefined?'GET':'POST',credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json','X-Qi-Request':'1'},body:body===undefined?undefined:JSON.stringify(body)});if(response.status===401)endSession();if(!response.ok)throw new Error((await response.text()).trim()||'Request failed');const result=await response.json();if(ended)throw new Error('Session ended. Reload to sign in again.');return result;}
 function clearForm(){editing=null;$('memory-heading').textContent='Create a record';$('memory-content').value='';$('memory-source').value='';$('memory-kind').value='preference';$('memory-confidence').value='1';$('memory-private').value='private';$('memory-expiry').value='';$('memory-confirm').checked=false;}
-function setBusy(value){saving=value;for(const id of ['memory-scope','memory-reload','memory-save','memory-cancel'])$(id).disabled=value||ended;}
-async function reload(){if(saving||ended||signingOut||checkingAuth)return;const serial=++generation,query=scopeQuery();clearForm();$('memory-list').replaceChildren();$('memory-form').hidden=!query;if(!query)return;$('memory-target').textContent='Save scope: '+$('memory-scope').selectedOptions[0].textContent;try{const items=await api(query);if(serial!==generation)return;for(const item of items)render(item,query,serial);}catch(e){if(serial===generation)failure(e);}}
-function render(item,query,serial){
+function setBusy(value){saving=value;$('memory-filter').disabled=value||ended||!loaded;for(const id of ['memory-scope','memory-reload','memory-save','memory-cancel'])$(id).disabled=value||ended;}
+function clearLoadedRecords(resetFilter=false){
+ // Invalidate pending list fetches even when auth checking prevents a new reload.
+ loadedRecords=[];loadedQuery='';loaded=false;++viewGeneration;++generation;
+ $('memory-list').replaceChildren();$('memory-filter-status').textContent='';$('memory-filter').disabled=true;
+ if(resetFilter)$('memory-filter').value='';
+}
+function paintLoadedRecords(){
+ ++viewGeneration;$('memory-list').replaceChildren();
+ if(!loaded||ended||loadedQuery!==scopeQuery())return;
+ const keyword=$('memory-filter').value.trim().toLowerCase();
+ const matches=loadedRecords.filter(item=>!keyword||item.content.toLowerCase().includes(keyword)||item.source_ref.toLowerCase().includes(keyword));
+ for(const item of matches)render(item,loadedQuery,generation,viewGeneration);
+ $('memory-filter-status').textContent=matches.length+' of '+loadedRecords.length+' loaded records'+(matches.length?'':loadedRecords.length?' · No matches.':' · No saved records in this scope.');
+}
+async function reload(){
+ if(saving||ended||signingOut||checkingAuth)return;
+ const query=scopeQuery();clearForm();clearLoadedRecords();const serial=generation;
+ $('memory-form').hidden=!query;$('memory-target').textContent='';
+ if(!query)return;
+ $('memory-target').textContent='Save scope: '+$('memory-scope').selectedOptions[0].textContent;
+ $('memory-filter-status').textContent='Loading records…';
+ try{
+  const items=await api(query);if(serial!==generation||ended||query!==scopeQuery())return;
+  loadedRecords=items;loadedQuery=query;loaded=true;$('memory-filter').disabled=false;paintLoadedRecords();
+ }catch(e){if(serial===generation){clearLoadedRecords();failure(e);}}
+}
+$('memory-filter').oninput=()=>{
+ if(saving||ended||signingOut||checkingAuth||!loaded)return;
+ paintLoadedRecords();
+};
+function render(item,query,serial,view){
+ const current=()=>!ended&&!signingOut&&!checkingAuth&&serial===generation&&view===viewGeneration&&query===scopeQuery();
  const card=node('section','');card.className='card';
  card.append(node('p',item.content),node('p','Source (user asserted): '+item.source_ref),node('p','Revision '+item.revision+' · '+item.kind+' · Confidence '+item.confidence+' · '+item.confidentiality),node('p','Updated '+item.updated_at+' · Expiry '+(item.expires_at||'none')),node('small','Approval audit reference: '+item.approval_ref));
  const edit=node('button','Edit'),history=node('button','Show revisions'),del=node('button','Delete all revisions');
- edit.onclick=()=>{if(saving||checkingAuth||serial!==generation)return;editing=item;$('memory-heading').textContent='Edit revision '+item.revision;$('memory-content').value=item.content;$('memory-source').value=item.source_ref;$('memory-kind').value=item.kind;$('memory-confidence').value=item.confidence;$('memory-private').value=item.confidentiality;$('memory-expiry').value=item.expires_at||'';$('memory-confirm').checked=false;};
- history.onclick=async()=>{if(saving||checkingAuth||serial!==generation)return;history.disabled=true;try{const versions=await api(query+'&id='+encodeURIComponent(item.id));if(serial!==generation)return;for(const v of versions)card.append(node('pre',JSON.stringify(v,null,2)));}catch(e){failure(e);history.disabled=false;}};
- del.onclick=async()=>{if(saving||checkingAuth||serial!==generation)return;if(!confirm('Delete this record and ALL its revisions from '+$('memory-scope').selectedOptions[0].textContent+'?\n\n'+item.content+'\n\nBackups, SQLite remnants and existing conversations are not erased.'))return;setBusy(true);try{await api(query,{action:'delete',id:item.id,revision:item.revision,confirm:true});}catch(e){failure(new Error(e.message+' Reload and inspect before retrying; the outcome may be uncertain.'));}finally{setBusy(false);await reload();}};
+ edit.onclick=()=>{if(saving||!current())return;editing=item;$('memory-heading').textContent='Edit revision '+item.revision;$('memory-content').value=item.content;$('memory-source').value=item.source_ref;$('memory-kind').value=item.kind;$('memory-confidence').value=item.confidence;$('memory-private').value=item.confidentiality;$('memory-expiry').value=item.expires_at||'';$('memory-confirm').checked=false;};
+ history.onclick=async()=>{if(saving||!current())return;history.disabled=true;try{const versions=await api(query+'&id='+encodeURIComponent(item.id));if(!current())return;for(const v of versions)card.append(node('pre',JSON.stringify(v,null,2)));}catch(e){if(current()){failure(e);history.disabled=false;}}};
+ del.onclick=async()=>{if(saving||!current())return;if(!confirm('Delete this record and ALL its revisions from '+$('memory-scope').selectedOptions[0].textContent+'?\n\n'+item.content+'\n\nBackups, SQLite remnants and existing conversations are not erased.'))return;setBusy(true);try{await api(query,{action:'delete',id:item.id,revision:item.revision,confirm:true});}catch(e){failure(new Error(e.message+' Reload and inspect before retrying; the outcome may be uncertain.'));}finally{clearLoadedRecords();clearForm();setBusy(false);await reload();}};
  card.append(edit,history,del);$('memory-list').append(card);
 }
-$('memory-form').onsubmit=async event=>{event.preventDefault();if(saving||ended||signingOut||checkingAuth||!scopeQuery()||!$('memory-confirm').checked)return;const query=scopeQuery();const fact={content:$('memory-content').value,source_ref:$('memory-source').value,kind:$('memory-kind').value,confidence:Number($('memory-confidence').value),confidentiality:$('memory-private').value};const expiry=$('memory-expiry').value.trim();if(expiry)fact.expires_at=expiry;const body={action:editing?'edit':'create',confirm:true,non_sensitive:true,fact};if(editing){body.id=editing.id;body.revision=editing.revision;}setBusy(true);$('memory-error').hidden=true;try{await api(query,body);}catch(e){failure(new Error(e.message+' Reload and inspect records before retrying; the outcome may be uncertain.'));}finally{setBusy(false);await reload();}};
-$('memory-scope').onchange=reload;$('memory-reload').onclick=reload;$('memory-cancel').onclick=clearForm;
+$('memory-form').onsubmit=async event=>{event.preventDefault();if(saving||ended||signingOut||checkingAuth||!scopeQuery()||!$('memory-confirm').checked)return;const query=scopeQuery();const fact={content:$('memory-content').value,source_ref:$('memory-source').value,kind:$('memory-kind').value,confidence:Number($('memory-confidence').value),confidentiality:$('memory-private').value};const expiry=$('memory-expiry').value.trim();if(expiry)fact.expires_at=expiry;const body={action:editing?'edit':'create',confirm:true,non_sensitive:true,fact};if(editing){body.id=editing.id;body.revision=editing.revision;}setBusy(true);$('memory-error').hidden=true;try{await api(query,body);}catch(e){failure(new Error(e.message+' Reload and inspect records before retrying; the outcome may be uncertain.'));}finally{clearLoadedRecords();clearForm();setBusy(false);await reload();}};
+$('memory-scope').onchange=()=>{if(saving||ended||checkingAuth||signingOut)return;$('memory-filter').value='';$('memory-error').hidden=true;return reload();};$('memory-reload').onclick=reload;$('memory-cancel').onclick=clearForm;
 // Any change invalidates the checkbox. A save always requires a fresh deliberate decision.
 for(const id of ['memory-content','memory-source','memory-kind','memory-confidence','memory-private','memory-expiry'])$(id).oninput=()=>{$('memory-confirm').checked=false;};
 (async()=>{try{for(const archived of [false,true]){const response=await fetch('/api/tasks'+(archived?'?archived=true':''),{credentials:'same-origin'});if(response.status===401)endSession();if(!response.ok)throw new Error('Cannot load task scopes. Sign in again if your session ended.');const tasks=await response.json();if(ended)return;for(const task of tasks){const option=node('option',(archived?'Archived task: ':'Task: ')+task.title+' ('+task.id+')');option.value='task:'+task.id;$('memory-scope').append(option);}}}catch(e){failure(e);}})();
