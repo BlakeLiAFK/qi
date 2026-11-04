@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"gopi/internal/skills"
 	"gopi/internal/tasks"
 )
 
@@ -32,4 +33,10 @@ func (b EngineBackend) Approvals(ctx context.Context, id string) ([]tasks.Approv
 }
 func (b EngineBackend) DecideApproval(ctx context.Context, id string, decision tasks.ApprovalDecision) (tasks.Approval, error) {
 	return b.Engine.DecideApproval(ctx, id, decision)
+}
+
+func (b EngineBackend) AvailableSkills() []skills.Metadata { return b.Engine.AvailableSkills() }
+func (b EngineBackend) StartWithSkills(ctx context.Context, id, prompt string, names []string) error {
+	_, err := b.Engine.StartWithSkills(ctx, id, prompt, names)
+	return err
 }

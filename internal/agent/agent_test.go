@@ -209,3 +209,24 @@ func TestObjectArgumentsAndBatchLimits(t *testing.T) {
 		t.Fatal("batch limit not enforced")
 	}
 }
+
+type cancelAfterDispatchTool struct{ cancel context.CancelFunc }
+
+func (t cancelAfterDispatchTool) Definition() ToolDefinition {
+	return ToolDefinition{Name: "cancel", Parameters: json.RawMessage(`{"type":"object"}`)}
+}
+func (t cancelAfterDispatchTool) Execute(context.Context, json.RawMessage) (string, error) {
+	t.cancel()
+	return "possibly applied", nil
+}
+func TestPostDispatchCancellationRecordsUnknown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := Agent{Tools: []Tool{cancelAfterDispatchTool{cancel}}, Model: modelFunc(func(context.Context, []Message, []ToolDefinition) (Message, error) {
+		return Message{ToolCalls: []ToolCall{{ID: "1", Name: "cancel", Arguments: json.RawMessage(`{}`)}}}, nil
+	})}
+	history, err := a.Run(ctx, nil)
+	if !errors.Is(err, ErrOutcomeUnknown) || !errors.Is(err, context.Canceled) || len(history) != 2 || !strings.Contains(history[1].Content, "possibly applied") {
+		t.Fatalf("%v %v", history, err)
+	}
+}

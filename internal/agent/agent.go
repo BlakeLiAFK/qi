@@ -36,13 +36,23 @@ type Model interface {
 	Complete(context.Context, []Message, []ToolDefinition) (Message, error)
 }
 
+// EventModel optionally reports model-input diagnostics through the same ordered
+// event stream as the agent. Implementations must not include prompt contents in
+// diagnostic events or retain the callback after CompleteWithEvents returns.
+type EventModel interface {
+	Model
+	CompleteWithEvents(context.Context, []Message, []ToolDefinition, func(Event)) (Message, error)
+}
+
 // Event callbacks are synchronous and ordered. A callback must not modify the
 // pointed-to values. Events represent whole messages, not token deltas.
 type Event struct {
-	Type     string    `json:"type"`
-	Message  *Message  `json:"message,omitempty"`
-	ToolCall *ToolCall `json:"tool_call,omitempty"`
-	Error    string    `json:"error,omitempty"`
+	Type            string    `json:"type"`
+	Message         *Message  `json:"message,omitempty"`
+	ToolCall        *ToolCall `json:"tool_call,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	DroppedMessages int       `json:"dropped_messages,omitempty"`
+	InputBytes      int       `json:"input_bytes,omitempty"`
 }
 
 var ErrMaxSteps = errors.New("agent exceeded maximum model steps")
@@ -117,7 +127,13 @@ func (a *Agent) Run(ctx context.Context, history []Message) ([]Message, error) {
 		if err := ctx.Err(); err != nil {
 			return fail(err)
 		}
-		response, err := a.Model.Complete(ctx, messages, definitions)
+		var response Message
+		var err error
+		if observable, ok := a.Model.(EventModel); ok {
+			response, err = observable.CompleteWithEvents(ctx, messages, definitions, a.emit)
+		} else {
+			response, err = a.Model.Complete(ctx, messages, definitions)
+		}
 		if err != nil {
 			return fail(fmt.Errorf("model: %w", err))
 		}

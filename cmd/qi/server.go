@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"gopi/internal/agent"
+	"gopi/internal/contextbudget"
 	"gopi/internal/provider"
 	"gopi/internal/session"
+	"gopi/internal/skills"
 	"gopi/internal/tasks"
 	"gopi/internal/webui"
 )
@@ -24,6 +26,9 @@ type daemonConfig struct {
 	database, model, baseURL, apiKey, origin, token string
 	maxSteps                                        int
 	coding                                          *tasks.CodingConfig
+	mcp                                             []tasks.MCPServer
+	contextBytes                                    int
+	skills                                          *skills.Catalog
 }
 
 // openDaemon owns one database and one engine. Coding tools require explicit
@@ -37,8 +42,8 @@ func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), erro
 	if err != nil {
 		return nil, nil, err
 	}
-	engine, err := tasks.New(ctx, store, tasks.Config{Coding: c.coding, Factory: func(_ string) (*agent.Agent, error) {
-		return &agent.Agent{Model: &provider.OpenAI{Model: c.model, BaseURL: c.baseURL, APIKey: c.apiKey}, MaxSteps: c.maxSteps}, nil
+	engine, err := tasks.New(ctx, store, tasks.Config{Coding: c.coding, MCP: c.mcp, Skills: c.skills, Factory: func(_ string) (*agent.Agent, error) {
+		return &agent.Agent{Model: &contextbudget.Model{Next: &provider.OpenAI{Model: c.model, BaseURL: c.baseURL, APIKey: c.apiKey}, Config: contextbudget.Config{MaxInputBytes: c.contextBytes}}, MaxSteps: c.maxSteps}, nil
 	}})
 	if err != nil {
 		_ = store.Close()
@@ -69,7 +74,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	fs := flag.NewFlagSet("qi serve", flag.ContinueOnError)
 	fs.SetOutput(out)
 	fs.Usage = func() {
-		fmt.Fprintln(out, "Usage: qi serve [flags]\nQI_WEB_TOKEN (at least 32 characters) is required; browser username is qi.\nUse qi attach to share these tasks from the terminal. Coding tools are disabled by default.")
+		fmt.Fprintln(out, "Usage: qi serve [flags]\nQI_WEB_TOKEN (at least 32 characters) is required; browser username is qi.\nUse qi attach to share these tasks from the terminal. Coding and MCP tools are disabled by default.\nQI_MAX_CONTEXT_BYTES sets serialized input budget (default 262144 bytes, not tokens).")
 		fs.PrintDefaults()
 	}
 	listen := fs.String("listen", "127.0.0.1:8686", "literal loopback listening address")
@@ -80,6 +85,9 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	max := fs.Int("max-steps", 20, "maximum model calls per task turn")
 	enabled := fs.Bool("enable-workers", false, "enable coding tools with per-action WebUI approvals")
 	workspace := fs.String("work-dir", "", "fixed coding workspace; required with -enable-workers (not a sandbox)")
+	var skillRoots skillRootFlags
+	fs.Var(&skillRoots, "skill-root", "explicit local skill directory; repeatable; earlier roots win; no automatic selection")
+	mcpPath := fs.String("mcp-tools", "", "static trusted MCP tool allowlist JSON; no credentials; each call requires approval")
 	timeout := fs.Duration("worker-timeout", 15*time.Minute, "coding worker runtime limit (maximum one hour)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -96,6 +104,10 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	if *max <= 0 {
 		return errors.New("max-steps must be positive")
 	}
+	contextBytes, err := contextInputBudget(env)
+	if err != nil {
+		return err
+	}
 	var coding *tasks.CodingConfig
 	if *enabled {
 		if strings.TrimSpace(*workspace) == "" {
@@ -107,6 +119,18 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 		coding = &tasks.CodingConfig{Workspace: *workspace, Timeout: *timeout, Credentials: workerCredentials(env)}
 	} else if *workspace != "" {
 		return errors.New("-work-dir requires -enable-workers")
+	}
+	var mcp []tasks.MCPServer
+	if *mcpPath != "" {
+		var err error
+		mcp, err = readMCPTools(*mcpPath)
+		if err != nil {
+			return err
+		}
+	}
+	catalog, err := discoverSkills(ctx, skillRoots)
+	if err != nil {
+		return err
 	}
 	if err := loopbackAddress(*listen); err != nil {
 		return err
@@ -138,7 +162,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 		}
 		*db = filepath.Join(dir, "tasks.db")
 	}
-	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, coding: coding})
+	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, coding: coding, mcp: mcp, contextBytes: contextBytes, skills: catalog})
 	if err != nil {
 		return err
 	}
@@ -149,7 +173,11 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	fmt.Fprintf(out, "qi WebUI: %s\nSign in as qi using QI_WEB_TOKEN. Token is never printed.\nSQLite: %s\nConnect from a terminal with qi attach.\n", *origin, *db)
 	if coding != nil {
 		fmt.Fprintln(out, "Coding workers enabled: every action requires approval in the WebUI. Workspace is not a sandbox.")
-	} else {
+	}
+	if len(mcp) > 0 {
+		fmt.Fprintln(out, "Static MCP tools enabled: server startup and each exact call require WebUI approval. This is not a sandbox.")
+	}
+	if coding == nil && len(mcp) == 0 {
 		fmt.Fprintln(out, "Server tools are disabled.")
 	}
 	select {

@@ -156,3 +156,15 @@ not the UI card renderer, claim an approved action before dispatch.
 Tests: `go test -race ./internal/webui` and
 `node --test internal/webui/app_test.cjs`. Node tests verify DOM behavior with a
 minimal test document; they are not browser-layout or end-to-end execution tests.
+
+## Explicit skills
+
+`GET /api/skills` returns only configured metadata and requires authentication.
+Sending a message may include `skills: [name, ...]`; absent or empty selection
+uses the ordinary turn. The engine resolves exact configured names and validates
+bounds before starting a run. The browser starts with every checkbox unchecked,
+clears selection after a successful send or task navigation, and does not load
+skill bodies itself. Labels identify these as untrusted local instructions, not
+permission to execute tools. Selected snapshots are sent to the model and saved
+in that task's history; clearing the next-turn selection does not erase earlier
+conversation content or create a new security boundary.

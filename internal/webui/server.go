@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"gopi/internal/skills"
 	"gopi/internal/tasks"
 )
 
@@ -41,6 +42,10 @@ type Backend interface {
 type ApprovalBackend interface {
 	Approvals(context.Context, string) ([]tasks.Approval, error)
 	DecideApproval(context.Context, string, tasks.ApprovalDecision) (tasks.Approval, error)
+}
+type SkillsBackend interface {
+	AvailableSkills() []skills.Metadata
+	StartWithSkills(context.Context, string, string, []string) error
 }
 type Config struct {
 	Origin  string
@@ -139,6 +144,19 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		contentType := map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}
 		w.Header().Set("Content-Type", contentType[name])
 		w.Write(b)
+	case "/api/skills":
+		if r.Method != "GET" {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		items := []skills.Metadata{}
+		if backend, ok := s.cfg.Backend.(SkillsBackend); ok {
+			items = backend.AvailableSkills()
+			if items == nil {
+				items = []skills.Metadata{}
+			}
+		}
+		respond(w, items)
 	case "/api/tasks":
 		s.tasks(w, r)
 	default:
@@ -286,13 +304,35 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	switch parts[1] {
 	case "messages":
 		var req struct {
-			Prompt string `json:"prompt"`
+			Prompt string   `json:"prompt"`
+			Skills []string `json:"skills,omitempty"`
 		}
 		if decode(w, r, &req) != nil || strings.TrimSpace(req.Prompt) == "" || len(req.Prompt) > 16000 {
 			http.Error(w, "invalid prompt (maximum 16000 bytes)", 400)
 			return
 		}
-		err = s.cfg.Backend.Start(r.Context(), id, req.Prompt)
+		if len(req.Skills) > 256 {
+			http.Error(w, "too many selected skills", 400)
+			return
+		}
+		seen := map[string]bool{}
+		for _, name := range req.Skills {
+			if name == "" || len(name) > 128 || seen[name] {
+				http.Error(w, "invalid skill selection", 400)
+				return
+			}
+			seen[name] = true
+		}
+		if len(req.Skills) == 0 {
+			err = s.cfg.Backend.Start(r.Context(), id, req.Prompt)
+		} else {
+			backend, ok := s.cfg.Backend.(SkillsBackend)
+			if !ok {
+				http.Error(w, "skills are unavailable", 400)
+				return
+			}
+			err = backend.StartWithSkills(r.Context(), id, req.Prompt, req.Skills)
+		}
 	case "cancel":
 		var req struct{}
 		if decode(w, r, &req) != nil {

@@ -8,7 +8,7 @@ function setup(){
  const nodes=new Map(),requests=[];
  const fixture={id:'one',title:'Test',status:'idle',messages:[],cards:[{id:'card-one',revision:4,title:'Choose',summary:'Review',state:'pending',actions:[{id:'approve',label:'Approve'}]}]};
  const document={getElementById(id){if(!nodes.has(id))nodes.set(id,new Node('div'));return nodes.get(id);},createElement(tag){return new Node(tag);},hidden:false};
- const context=vm.createContext({document,setInterval(){},fetch:async(path,opts)=>{requests.push({path,opts});return {ok:true,json:async()=>path==='/api/tasks'?[]:fixture};}});
+ const context=vm.createContext({document,setInterval(){},fetch:async(path,opts)=>{requests.push({path,opts});return {ok:true,json:async()=>path==='/api/tasks'||path==='/api/skills'||(path.endsWith('/approvals')&&opts.method==='GET')?[]:fixture};}});
  vm.runInContext(fs.readFileSync(__dirname+'/assets/app.js','utf8'),context);
  return {nodes,context,fixture,requests};
 }
@@ -47,4 +47,22 @@ test('expired or settled durable approvals cannot be clicked',()=>{
   fixture.approvals=[{id:'a',revision:1,digest:'b'.repeat(64),status,expires_at:new Date(Date.now()+expires).toISOString(),action:{kind:'coding.run',target:'workspace',payload:{}}}];
   context.paint(fixture);assert.ok(nodes.get('conversation').children.at(-1).children.filter(x=>x.tag==='button').every(x=>x.disabled));
  }
+});
+
+test('skills start unchecked, explicit choices apply to only one sent message',async()=>{
+ const {nodes,context,requests}=setup();await new Promise(setImmediate);
+ context.paintSkills([{name:'review',description:'Untrusted guidance',source:'explicit',path:'/skills/review/SKILL.md'}]);
+ const input=nodes.get('skills').children[1].children[0];assert.equal(input.checked,false);
+ vm.runInContext("selected='one'",context);context.document.getElementById('prompt').value='First request';
+ await nodes.get('composer').onsubmit({preventDefault(){}});
+ let sent=requests.filter(r=>r.path.endsWith('/messages'));assert.deepEqual(JSON.parse(sent.at(-1).opts.body).skills,[]);
+ input.checked=true;context.document.getElementById('prompt').value='Use review now';await nodes.get('composer').onsubmit({preventDefault(){}});
+ sent=requests.filter(r=>r.path.endsWith('/messages'));assert.deepEqual(JSON.parse(sent.at(-1).opts.body).skills,['review']);assert.equal(input.checked,false);
+ input.checked=true;nodes.get('new-task').onclick();assert.equal(input.checked,false);
+});
+
+test('latest context reduction notice explains omitted user instructions without claiming current context',()=>{
+ const {nodes,context,fixture}=setup();fixture.context_notice={dropped_messages:12,input_bytes:8192,run_id:'run-one'};context.paint(fixture);
+ const notice=nodes.get('conversation').children[0];const text=notice.children.map(n=>n.textContent).join(' ');
+ assert.match(text,/12 earlier messages/);assert.match(text,/user instructions/);assert.match(text,/Full saved history is unchanged/);assert.match(text,/system and developer/);assert.match(text,/not a guarantee/);assert.match(text,/8192/);
 });

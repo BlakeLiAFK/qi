@@ -38,15 +38,24 @@ type ActionRequest struct {
 	Revision int64  `json:"revision"`
 	Action   string `json:"action"`
 }
+
+// ContextNotice describes the latest recorded context eviction, not a summary.
+// It contains no prompt content; full conversation history remains stored.
+type ContextNotice struct {
+	RunID           string `json:"run_id"`
+	DroppedMessages int    `json:"dropped_messages"`
+	InputBytes      int    `json:"input_bytes"`
+}
 type Task struct {
-	ID        string          `json:"id"`
-	Title     string          `json:"title"`
-	Status    string          `json:"status"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
-	Messages  []agent.Message `json:"messages"`
-	Runs      []Run           `json:"runs"`
-	Cards     []Card          `json:"cards"`
+	ContextNotice *ContextNotice  `json:"context_notice,omitempty"`
+	ID            string          `json:"id"`
+	Title         string          `json:"title"`
+	Status        string          `json:"status"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+	Messages      []agent.Message `json:"messages"`
+	Runs          []Run           `json:"runs"`
+	Cards         []Card          `json:"cards"`
 }
 type Config struct {
 	Skills         *skills.Catalog
@@ -178,6 +187,17 @@ func (e *Engine) Get(ctx context.Context, id string) (Task, error) {
 	}
 	indices := map[string]int{}
 	for _, ev := range events {
+		if ev.Type == "context_trim" {
+			var notice ContextNotice
+			if err := json.Unmarshal(ev.Payload, &notice); err != nil {
+				return Task{}, fmt.Errorf("decode context notice: %w", err)
+			}
+			if notice.DroppedMessages > 0 && notice.InputBytes > 0 {
+				notice.RunID = ev.RunID
+				t.ContextNotice = &notice
+			}
+			continue
+		}
 		if ev.Type != "card" {
 			continue
 		}

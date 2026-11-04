@@ -47,6 +47,14 @@ type Model struct {
 }
 
 func (m *Model) Complete(ctx context.Context, messages []agent.Message, definitions []agent.ToolDefinition) (agent.Message, error) {
+	return m.CompleteWithEvents(ctx, messages, definitions, nil)
+}
+
+// CompleteWithEvents reports successful eviction before dispatch. The notice
+// contains counts only, never prompt contents. Agent.Run calls this automatically.
+// It is an eviction notice, not a claim of summarization or semantic preservation:
+// restrictions in old user turns may be omitted along with those turns.
+func (m *Model) CompleteWithEvents(ctx context.Context, messages []agent.Message, definitions []agent.ToolDefinition, emit func(agent.Event)) (agent.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return agent.Message{}, err
 	}
@@ -56,6 +64,15 @@ func (m *Model) Complete(ctx context.Context, messages []agent.Message, definiti
 	projection, err := Project(messages, definitions, m.Config)
 	if err != nil {
 		return agent.Message{}, err
+	}
+	if projection.DroppedMessages > 0 && emit != nil {
+		emit(agent.Event{Type: "context_trim", DroppedMessages: projection.DroppedMessages, InputBytes: projection.InputBytes})
+	}
+	if err := ctx.Err(); err != nil {
+		return agent.Message{}, err
+	}
+	if next, ok := m.Next.(agent.EventModel); ok {
+		return next.CompleteWithEvents(ctx, projection.Messages, definitions, emit)
 	}
 	return m.Next.Complete(ctx, projection.Messages, definitions)
 }

@@ -54,8 +54,7 @@ the parent directory must already exist. Stored prompts and outputs are plaintex
 not encrypted: keep the database, WAL, and backups private and outside your repository.
 
 The server has no tools enabled by default. Opt-in coding actions use durable,
-action-specific WebUI approval (see below). MCP plugins remain standalone CLI
-only. Informational cards do not execute work. Use `qi attach` to share daemon
+action-specific WebUI approval (see below). Static, approval-gated MCP tools can also be explicitly configured (see below). Informational cards do not execute work. Use `qi attach` to share daemon
 tasks from the terminal; bare `qi` remains a separate, in-memory session.
 
 The listener accepts only literal loopback IP addresses. For another local port,
@@ -89,7 +88,9 @@ submitting while it is already running is rejected, not queued. `/history`
 refreshes messages, `/wait` polls the active turn, `/cancel` requests cancellation,
 and `/quit` disconnects. Normal lines submit messages and wait for a result.
 The terminal polls at 300 ms while waiting; it does not stream tokens or receive
-updates automatically while sitting at its prompt.
+updates automatically while sitting at its prompt. `/skills` lists configured
+references; `/use-skills name1,name2` selects references for the next accepted
+message only, and `/use-skills` clears that pending selection.
 
 Pending approvals are shown as a notice. Review the exact action in the WebUI,
 then use `/wait` to follow completion. One-shot `attach -p` returns a nonzero exit
@@ -105,7 +106,124 @@ The client never follows redirects and does not use proxy environment variables.
 Its token is read only from `QI_WEB_TOKEN`, never CLI arguments or printed output.
 `qi attach -h` lists options. It does not need model credentials; the daemon does.
 
-## MCP plugins
+## Context byte budget
+
+`QI_MAX_CONTEXT_BYTES` sets a positive integer budget for serialized model-input
+messages and tool definitions, default **262144 bytes (256 KiB)**. It applies to
+standalone `qi` and `qi serve`; `qi attach` uses the daemon’s setting. This is a byte
+budget, **not a token limit**, and excludes provider request metadata. Provider
+limits can still reject a request.
+
+Before each model request, the wrapper drops oldest complete conversation turns
+from the model view until it fits, preserving system/developer instructions and
+the latest whole turn, including complete tool-call/result groups. It never
+summarizes or abbreviates messages. If required context cannot fit, the request
+fails locally without contacting the provider. Full history stays unchanged in
+memory or SQLite. This is input selection, not compaction or summarization, and
+instructions in omitted older user turns are no longer visible to the model.
+Standalone CLI requests print a diagnostic when earlier messages are omitted,
+including a warning that earlier user instructions may no longer be visible.
+Attached terminals display the saved notice once per affected run; the notice
+describes a recorded model-input change, not deletion of conversation history.
+
+## Explicit local skill references
+
+```sh
+./qi serve -skill-root /private/path/skills -skill-root /another/skills-root
+./qi attach -task TASK_ID -p 'Review this change' -skills review-style
+```
+
+No skill directories are discovered automatically. Each explicit root may contain
+`SKILL.md` directly and/or immediate child directories with `SKILL.md`. Roots are
+searched in command-line order; the first name wins collisions. Missing or invalid
+roots fail startup instead of being silently ignored. Example document:
+
+```text
+---
+name: review-style
+description: A short review checklist
+---
+Check correctness, error handling, and tests. Explain uncertainty explicitly.
+```
+
+Configuring a root only exposes metadata. Select references explicitly in the
+WebUI or with `qi attach`. For interactive terminals, `/skills` lists names and
+`/use-skills review-style` applies to the next accepted message only. Selection
+resets after submission; an empty `/use-skills` clears it. The `-skills` option is
+accepted only with one-shot `-p`, not as an automatic session default. Bare
+standalone `qi` currently has no skill-root or skill-selection support.
+
+Selected document snapshots are stored as labeled **untrusted local reference
+content** in that task’s user turn. They are not system policy, never execute
+scripts, never enable tools, and never grant permission. The snapshot remains in
+that task’s ordinary history, so clearing a selection does not erase earlier
+references. Combined prompt/reference limits apply; oversized or unknown
+selections are rejected before starting a run. Skill contents are sent to the
+configured model and stored in SQLite with that turn; do not select documents
+containing secrets. All coding/MCP execution still requires its separate approval.
+
+## Approval-gated MCP tools in the daemon
+
+Enable only a static allowlist of trusted local tools:
+
+```sh
+./qi serve -mcp-tools /private/path/mcp-tools.json
+```
+
+Example file (replace the executable and directory with real trusted paths):
+
+```json
+[
+  {
+    "name": "example",
+    "command": "/absolute/path/to/trusted-mcp-server",
+    "args": [],
+    "dir": "/path/to/workspace",
+    "tools": [
+      {
+        "name": "lookup",
+        "description": "Look up a local item",
+        "inputSchema": {
+          "type": "object",
+          "properties": {"query": {"type": "string"}},
+          "required": ["query"],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+]
+```
+
+The file is limited to 1 MiB and 1–16 servers. Unknown fields are rejected;
+`env`, credentials, and dynamic discovery are unsupported. Each server needs a
+unique alphanumeric/underscore name starting with a letter (up to 24 characters),
+an executable, an existing explicit directory, and a nonempty static tool list.
+Tool names follow the same naming rule. Executables and directories are checked
+at daemon startup, but **no MCP process is launched during configuration loading**.
+Relative paths are resolved from qi’s working directory, not the JSON file.
+
+The model sees `mcp_example__lookup`. Each invocation requires a new exact-action
+WebUI approval covering the command, startup arguments, directory, tool name,
+arguments, timeout, and side-effect warning. Only after approval does qi launch a
+fresh server, initialize it, and make that call. Starting an executable can itself
+have side effects, even before the tool call. No approval means no process start.
+Defaults are 30 seconds per call and five minutes to approve; this first JSON
+format does not expose timeout overrides. Configure accurate tool descriptions
+and schemas yourself; qi does not fetch a remote catalog or grant extra tools.
+
+Scoped MCP currently requires a Unix platform with process-group cleanup support.
+Scoped MCP processes use a disposable home and minimal system environment without
+credential overrides. Do not embed secrets in commands, startup arguments,
+descriptions, schemas, or tool arguments: configuration and approvals are durable
+and model-visible where applicable. No hosted/OAuth/credential-bearing MCP setup
+is supported in this daemon mode. Same-UID filesystem, process, and network access
+remain possible, so this is **not a sandbox** and is unsafe for untrusted plugins
+or a public tool-enabled preview without actual isolation. MCP remains off unless
+`-mcp-tools` is explicitly supplied. Cancellation/recovery cannot roll back external
+changes or guarantee exactly-once effects. Tests use fixtures, not live services.
+
+## Standalone MCP plugins
 
 Create a trusted JSON configuration file:
 
@@ -126,8 +244,9 @@ Create a trusted JSON configuration file:
 ```
 
 Passing `-plugins` explicitly authorizes starting those programs. No configuration
-is auto-discovered. Servers inherit the qi process environment (including secrets)
-and run with the user's privileges. Review commands before enabling them. Startup
+is auto-discovered. Servers receive routine process settings (including the user’s HOME), plus only
+explicit `env` entries, and run with the user’s privileges. Ambient API tokens are
+not copied by default, but same-user files and stored logins may remain accessible. Review commands before enabling them. Startup
 can have side effects before any tool approval. Only newline-delimited MCP stdio
 is supported, with initialization and paginated tool discovery. Tool names are
 prefixed `example__` to avoid collisions. Relative command paths and working

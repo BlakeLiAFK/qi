@@ -195,3 +195,62 @@ func TestWrapperDoesNotDispatchOnFailureOrCancellation(t *testing.T) {
 		t.Fatal("accepted nil model")
 	}
 }
+
+func TestAgentReportsContentFreeTrimBeforeDispatch(t *testing.T) {
+	history := example()
+	minimal, _ := Project([]agent.Message{history[0], history[6], history[7], history[8]}, nil, Config{})
+	next := &recordingModel{}
+	var events []agent.Event
+	runner := agent.Agent{Model: &Model{Next: next, Config: Config{MaxInputBytes: minimal.InputBytes}}, OnEvent: func(event agent.Event) {
+		if event.Type == "context_trim" && next.calls != 0 {
+			t.Fatal("trim event must precede dispatch")
+		}
+		events = append(events, event)
+	}}
+	_, err := runner.Run(context.Background(), history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 4 || events[0].Type != "run_start" || events[1].Type != "context_trim" || events[2].Type != "message" || events[3].Type != "run_end" {
+		t.Fatalf("events=%#v", events)
+	}
+	trimmed := events[1]
+	if trimmed.DroppedMessages != 5 || trimmed.InputBytes != minimal.InputBytes || trimmed.Message != nil || trimmed.ToolCall != nil || trimmed.Error != "" {
+		t.Fatalf("unexpected event: %#v", trimmed)
+	}
+	raw, _ := json.Marshal(trimmed)
+	if strings.Contains(string(raw), "old prompt") || strings.Contains(string(raw), "latest prompt") {
+		t.Fatalf("event leaked contents: %s", raw)
+	}
+}
+
+func TestTrimCallbackCancellationPreventsDispatch(t *testing.T) {
+	history := example()
+	minimal, _ := Project([]agent.Message{history[0], history[6], history[7], history[8]}, nil, Config{})
+	next := &recordingModel{}
+	model := &Model{Next: next, Config: Config{MaxInputBytes: minimal.InputBytes}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := model.CompleteWithEvents(ctx, history, nil, func(event agent.Event) { cancel() })
+	if !errors.Is(err, context.Canceled) || next.calls != 0 {
+		t.Fatalf("calls=%d err=%v", next.calls, err)
+	}
+}
+
+func TestNoTrimNoticeForUnchangedOrFailedProjection(t *testing.T) {
+	history := example()
+	next := &recordingModel{}
+	model := &Model{Next: next}
+	count := 0
+	emit := func(agent.Event) { count++ }
+	if _, err := model.CompleteWithEvents(context.Background(), history, nil, emit); err != nil {
+		t.Fatal(err)
+	}
+	model.Config.MaxInputBytes = 1
+	if _, err := model.CompleteWithEvents(context.Background(), history, nil, emit); !errors.Is(err, ErrTooLarge) {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("unexpected notice count=%d", count)
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"gopi/internal/skills"
 	"gopi/internal/tasks"
 )
 
@@ -93,13 +94,14 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 	fs := flag.NewFlagSet("qi attach", flag.ContinueOnError)
 	fs.SetOutput(diagnostics)
 	fs.Usage = func() {
-		fmt.Fprintln(diagnostics, "Usage: qi attach [flags]\nConnect to the same daemon tasks as the WebUI. Auth: QI_WEB_TOKEN environment only.\nCommands: /history, /wait, /cancel, /quit. Use the WebUI for approval decisions.\nQuitting or Ctrl-C does not cancel daemon work; use /cancel explicitly.")
+		fmt.Fprintln(diagnostics, "Usage: qi attach [flags]\nConnect to the same daemon tasks as the WebUI. Auth: QI_WEB_TOKEN environment only.\nCommands: /history, /wait, /cancel, /skills, /use-skills names, /quit. Use the WebUI for approval decisions.\nQuitting or Ctrl-C does not cancel daemon work; use /cancel explicitly.")
 		fs.PrintDefaults()
 	}
 	origin := fs.String("url", "http://127.0.0.1:8686", "exact daemon origin, without trailing slash")
 	id := fs.String("task", "", "existing task ID (otherwise creates a task)")
 	title := fs.String("title", "Terminal task", "title when creating a task")
 	prompt := fs.String("p", "", "one-shot prompt; otherwise interactive")
+	skillSelection := fs.String("skills", "", "comma-separated skill names for -p only; untrusted references, no tool permission")
 	list := fs.Bool("list", false, "list daemon tasks and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -110,6 +112,10 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 	if fs.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
 	}
+	if *skillSelection != "" && *prompt == "" {
+		return errors.New("-skills requires -p; in interactive mode use /use-skills for the next message")
+	}
+	selected := selectedSkillNames(*skillSelection)
 	if *id != "" && !taskIDPattern.MatchString(*id) {
 		return errors.New("invalid task ID")
 	}
@@ -148,6 +154,15 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 		}
 	}
 	fmt.Fprintf(diagnostics, "Task %s (%q) at %s\n", *id, task.Title, *origin)
+	lastNoticeRun := ""
+	showNotice := func(t tasks.Task) {
+		if n := t.ContextNotice; n != nil && n.DroppedMessages > 0 && n.RunID != lastNoticeRun {
+			fmt.Fprintf(diagnostics, "Saved context notice (run %s): %d earlier messages, including their user instructions, were omitted from the model input (%d bytes). Full task history is unchanged.\n", n.RunID, n.DroppedMessages, n.InputBytes)
+			lastNoticeRun = n.RunID
+		}
+	}
+	showNotice(task)
+
 	show := func(task tasks.Task) {
 		for _, m := range task.Messages {
 			if m.Role == "assistant" && m.Content != "" {
@@ -163,6 +178,7 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 			if err != nil {
 				return err
 			}
+			showNotice(t)
 			if t.Status == "running" {
 				var approvals []tasks.Approval
 				if err := c.request(ctx, "GET", "/api/tasks/"+*id+"/approvals", nil, &approvals); err != nil {
@@ -197,9 +213,10 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 		}
 	}
 	send := func(text string) error {
-		if err := c.request(ctx, "POST", "/api/tasks/"+*id+"/messages", map[string]string{"prompt": text}, nil); err != nil {
+		if err := c.request(ctx, "POST", "/api/tasks/"+*id+"/messages", map[string]any{"prompt": text, "skills": selected}, nil); err != nil {
 			return err
 		}
+		selected = nil // Explicit selection applies only to this accepted turn.
 		return wait()
 	}
 	if *prompt != "" {
@@ -208,7 +225,7 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 	show(task)
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
-	fmt.Fprintln(diagnostics, "Attached. /history, /wait, /cancel, /quit. Daemon work continues when you disconnect.")
+	fmt.Fprintln(diagnostics, "Attached. /history, /wait, /cancel, /skills, /use-skills names, /quit. Daemon work continues when you disconnect.")
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -235,6 +252,18 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 			if err := wait(); err != nil {
 				fmt.Fprintln(diagnostics, err)
 			}
+		case "/skills":
+			var available []skills.Metadata
+			if err := c.request(ctx, "GET", "/api/skills", nil, &available); err != nil {
+				fmt.Fprintln(diagnostics, err)
+			} else {
+				for _, skill := range available {
+					fmt.Fprintf(out, "%s\t%q\n", skill.Name, skill.Description)
+				}
+			}
+		case "/use-skills":
+			selected = nil
+			fmt.Fprintln(diagnostics, "Skill selection cleared.")
 		case "/cancel":
 			if err := c.request(ctx, "POST", "/api/tasks/"+*id+"/cancel", struct{}{}, nil); err != nil {
 				fmt.Fprintln(diagnostics, err)
@@ -242,8 +271,13 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 				fmt.Fprintln(diagnostics, "Cancellation requested.")
 			}
 		default:
+			if strings.HasPrefix(line, "/use-skills ") {
+				selected = selectedSkillNames(strings.TrimPrefix(line, "/use-skills "))
+				fmt.Fprintf(diagnostics, "Selected for the next message only: %q. Skill text is untrusted and grants no tool permissions.\n", selected)
+				continue
+			}
 			if strings.HasPrefix(line, "/") {
-				fmt.Fprintln(diagnostics, "Unknown command. Use /history, /wait, /cancel, or /quit.")
+				fmt.Fprintln(diagnostics, "Unknown command. Use /history, /wait, /cancel, /skills, /use-skills names, or /quit.")
 				continue
 			}
 			if err := send(line); err != nil {
