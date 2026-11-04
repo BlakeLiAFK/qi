@@ -63,10 +63,67 @@ approval boundary. A confirmation card cannot grant general tool privileges.
 The UI polls task state; token streaming is not implemented. Switching task tabs
 does not cancel other runs. Concurrent task execution and durable history are
 owned by the task engine. The interface does not itself constrain a model,
-plugin, worker process, filesystem access or network access. Tool execution needs
-its own reviewed approval and isolation implementation.
+plugin, worker process, filesystem access or network access. The optional coding
+adapter uses the approval boundary described below; OS isolation remains the
+operator's responsibility. MCP tools are not enabled in daemon tasks.
 
 Before any public preview, test authentication, origin/host rejection, replayed
 cards, cancellation, concurrent tasks and restart recovery; verify TLS and proxy
 configuration from outside the host. An authenticated local fixture test does
 not establish that a public deployment is secure.
+
+## Optional coding execution
+
+Coding tools are disabled by default. `qi serve -enable-workers -work-dir /repo`
+adds a run-scoped `coding_run` tool. The model chooses only the supported CLI and
+its prompt, never a directory, executable, approval ID, or an approval decision.
+Each invocation waits for an authenticated, exact-action approval with a default
+five-minute expiry. The approval includes the full prompt, executable, workspace,
+runtime limit and access warning. Informational cards do not authorize execution.
+The durable approval is atomically consumed before dispatch and cannot be reused.
+
+The operator selects one existing canonical workspace. qi detects replacement
+of that directory before dispatch, but this is **not filesystem confinement** or
+a security sandbox. CLIs retain their own permissions and network access. Workers receive only an
+allowlisted runtime environment, a temporary HOME and CLI configuration directories,
+and explicitly configured CODEX_API_KEY/ANTHROPIC_API_KEY worker credentials.
+QI_WEB_TOKEN, OPENAI_API_KEY and other parent secrets are not inherited. This
+reduces accidental exposure but does not stop same-user code from reading host
+files, parent process information or the qi database. Run qi in an isolated account/container
+with only intended secrets and files when processing untrusted content. Approved jobs sharing a canonical workspace are serialized within one qi process.
+The workspace slot is acquired after approval; queued approval expiry and run
+cancellation remain enforced. Separate daemon processes are not coordinated,
+and qi does not provide worktrees or OS isolation. No model-callable arbitrary shell command or path override is exposed.
+
+Codex runs with explicit `--ask-for-approval never` and `--sandbox workspace-write`:
+the CLI cannot request escalated permissions interactively. Claude runs with
+`--bare --permission-mode default`; qi does not pass permission-bypass flags.
+CLI-enforced permissions can still cause a request to fail. The adapter has fake
+CLI lifecycle tests; installed CLI version compatibility and provider execution
+must be validated separately before using real credentials.
+
+The run owns the subprocess lifetime. On supported Unix hosts qi kills the
+worker process group after every parent exit, including normal exits, and on
+cancellation. Processes that deliberately escape the group are not confined. Output is limited to the first 64 KiB and
+reported as truncated when needed; runtime defaults to 15 minutes, capped at one
+hour for daemon coding tasks. Completion means the CLI exited successfully, not
+that its changes are correct or have passed tests. A process that fails or is
+cancelled may have changed files; its approval becomes `unknown`, and the model
+turn stops instead of retrying. Restart recovery marks in-flight outcomes unknown
+and never launches the CLI again. It does not reconcile files or reattach orphaned
+processes after an abrupt host failure. Inspect the workspace and running processes
+before authorizing another attempt. Cancelling or stopping qi is not rollback.
+
+## Coding execution approvals
+
+Informational task cards and execution approvals use separate routes. The Web UI
+polls `GET /api/tasks/{id}/approvals` and displays each approval's complete action
+payload, target, expiry, revision and digest. Explicit Allow/Deny submits only
+`{id, revision, digest, allow}` to `POST /api/tasks/{id}/approvals`. Missing decisions
+or digests are rejected. The engine verifies current state and action binding;
+replays or expired/stale decisions return conflict. The coding execution adapter,
+not the UI card renderer, claims an approved action before dispatch.
+
+Tests: `go test -race ./internal/webui` and
+`node --test internal/webui/app_test.cjs`. Node tests verify DOM behavior with a
+minimal test document; they are not browser-layout or end-to-end execution tests.

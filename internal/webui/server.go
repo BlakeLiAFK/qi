@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -34,6 +35,12 @@ type Backend interface {
 	Get(context.Context, string) (Task, error)
 	Cancel(context.Context, string) error
 	Act(context.Context, string, ActionRequest) error
+}
+
+// ApprovalBackend is deliberately separate from informational card actions.
+type ApprovalBackend interface {
+	Approvals(context.Context, string) ([]tasks.Approval, error)
+	DecideApproval(context.Context, string, tasks.ApprovalDecision) (tasks.Approval, error)
 }
 type Config struct {
 	Origin  string
@@ -267,6 +274,10 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		respond(w, task)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "approvals" {
+		s.approvals(w, r, id)
+		return
+	}
 	if len(parts) != 2 || r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
 		return
@@ -305,4 +316,47 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, map[string]bool{"accepted": true})
+}
+
+func (s *server) approvals(w http.ResponseWriter, r *http.Request, id string) {
+	backend, ok := s.cfg.Backend.(ApprovalBackend)
+	if !ok {
+		http.Error(w, "approvals are unavailable", http.StatusNotImplemented)
+		return
+	}
+	switch r.Method {
+	case "GET":
+		items, err := backend.Approvals(r.Context(), id)
+		if err != nil {
+			http.Error(w, "cannot list approvals", 500)
+			return
+		}
+		if items == nil {
+			items = []tasks.Approval{}
+		}
+		respond(w, items)
+	case "POST":
+		var req struct {
+			ID       string `json:"id"`
+			Revision int64  `json:"revision"`
+			Digest   string `json:"digest"`
+			Allow    *bool  `json:"allow"`
+		}
+		if decode(w, r, &req) != nil || req.ID == "" || len(req.ID) > 128 || req.Revision < 1 || len(req.Digest) != 64 || req.Allow == nil {
+			http.Error(w, "invalid exact-action decision", 400)
+			return
+		}
+		if _, err := hex.DecodeString(req.Digest); err != nil {
+			http.Error(w, "invalid action digest", 400)
+			return
+		}
+		approval, err := backend.DecideApproval(r.Context(), id, tasks.ApprovalDecision{ID: req.ID, Revision: req.Revision, Digest: req.Digest, Allow: *req.Allow})
+		if err != nil {
+			http.Error(w, "approval rejected: stale, expired or already decided; refresh", 409)
+			return
+		}
+		respond(w, approval)
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
 }

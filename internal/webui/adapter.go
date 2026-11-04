@@ -26,3 +26,10 @@ func (b EngineBackend) Cancel(ctx context.Context, id string) error { return b.E
 func (b EngineBackend) Act(ctx context.Context, id string, req ActionRequest) error {
 	return b.Engine.Act(ctx, id, req)
 }
+
+func (b EngineBackend) Approvals(ctx context.Context, id string) ([]tasks.Approval, error) {
+	return b.Engine.Approvals(ctx, id)
+}
+func (b EngineBackend) DecideApproval(ctx context.Context, id string, decision tasks.ApprovalDecision) (tasks.Approval, error) {
+	return b.Engine.DecideApproval(ctx, id, decision)
+}
