@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 )
 
 type Config struct {
+	Credentials    map[string]string
 	Enabled        bool
 	CodexPath      string
 	ClaudePath     string
@@ -51,6 +54,11 @@ type Manager struct {
 }
 
 func New(c Config) *Manager {
+	credentials := make(map[string]string, len(c.Credentials))
+	for key, value := range c.Credentials {
+		credentials[key] = value
+	}
+	c.Credentials = credentials
 	if c.CodexPath == "" {
 		c.CodexPath = "codex"
 	}
@@ -68,6 +76,20 @@ func New(c Config) *Manager {
 	}
 	return &Manager{config: c, tasks: make(map[string]*entry)}
 }
+
+// Arguments is the single allowlisted argument plan used for review and launch.
+// Never add permission-bypass or unrestricted-execution flags here.
+func Arguments(agent, prompt string) ([]string, error) {
+	switch agent {
+	case "codex":
+		return []string{"--ask-for-approval", "never", "exec", "--sandbox", "workspace-write", "--", prompt}, nil
+	case "claude":
+		return []string{"--bare", "--permission-mode", "default", "-p", "--output-format", "text", "--", prompt}, nil
+	default:
+		return nil, fmt.Errorf("unsupported coding agent %q", agent)
+	}
+}
+
 func (m *Manager) Start(parent context.Context, r Request) (Task, error) {
 	if !m.config.Enabled {
 		return Task{}, errors.New("coding workers are disabled; enable explicitly")
@@ -75,18 +97,25 @@ func (m *Manager) Start(parent context.Context, r Request) (Task, error) {
 	if strings.TrimSpace(r.Prompt) == "" || r.WorkDir == "" {
 		return Task{}, errors.New("prompt and work_dir are required")
 	}
-	var executable string
-	var args []string
-	switch r.Agent {
-	case "codex":
-		executable = m.config.CodexPath
-		args = []string{"exec", "--sandbox", "workspace-write", "--", r.Prompt}
-	case "claude":
-		executable = m.config.ClaudePath
-		args = []string{"--bare", "-p", "--output-format", "text", "--", r.Prompt}
-	default:
-		return Task{}, fmt.Errorf("unsupported coding agent %q", r.Agent)
+	args, err := Arguments(r.Agent, r.Prompt)
+	if err != nil {
+		return Task{}, err
 	}
+	executable := m.config.CodexPath
+	if r.Agent == "claude" {
+		executable = m.config.ClaudePath
+	}
+
+	env, cleanEnvironment, err := workerEnvironment(m.config.Credentials)
+	if err != nil {
+		return Task{}, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			cleanEnvironment()
+		}
+	}()
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		return Task{}, err
@@ -94,9 +123,23 @@ func (m *Manager) Start(parent context.Context, r Request) (Task, error) {
 	ctx, cancel := context.WithTimeout(parent, m.config.Timeout)
 	b := &boundedBuffer{limit: m.config.MaxOutputBytes}
 	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Env = env
 	cmd.Dir = r.WorkDir
-	cmd.Stdout = b
-	cmd.Stderr = b
+	// Own the output pipe so cmd.Wait observes the CLI parent exit rather than
+	// waiting for descendants to close inherited stdout before group cleanup.
+	outputReader, outputWriter, err := os.Pipe()
+	if err != nil {
+		cancel()
+		return Task{}, err
+	}
+	defer func() {
+		if !started {
+			outputReader.Close()
+			outputWriter.Close()
+		}
+	}()
+	cmd.Stdout = outputWriter
+	cmd.Stderr = outputWriter
 	cmd.WaitDelay = 2 * time.Second
 	configureProcess(cmd)
 	e := &entry{task: Task{ID: hex.EncodeToString(id[:]), Agent: r.Agent, Status: "running", StartedAt: time.Now().UTC()}, output: b, cancel: cancel}
@@ -114,12 +157,25 @@ func (m *Manager) Start(parent context.Context, r Request) (Task, error) {
 		cancel()
 		return Task{}, fmt.Errorf("start %s: %w", r.Agent, err)
 	}
+	started = true
+	_ = outputWriter.Close()
+	outputDone := make(chan struct{})
+	go func() { defer close(outputDone); defer outputReader.Close(); _, _ = io.Copy(b, outputReader) }()
 	m.tasks[e.task.ID] = e
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
 		defer cancel()
+		defer cleanEnvironment()
 		err := cmd.Wait()
+		cleanupProcess(cmd)
+		// A descendant escaping its group must not hold this run open forever.
+		select {
+		case <-outputDone:
+		case <-time.After(100 * time.Millisecond):
+			_ = outputReader.Close()
+			<-outputDone
+		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		e.task.Status = "completed"

@@ -120,3 +120,68 @@ func TestFailureAndValidation(t *testing.T) {
 		t.Fatal("closed start allowed")
 	}
 }
+
+func TestArgumentsEnforceExplicitSafetyModes(t *testing.T) {
+	for _, name := range []string{"codex", "claude"} {
+		args, err := Arguments(name, "--dangerously-skip-permissions; $(touch /tmp/nope)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined := strings.Join(args[:len(args)-1], " ")
+		if strings.Contains(joined, "dangerously") || strings.Contains(joined, "bypassPermissions") || strings.Contains(joined, "full-auto") {
+			t.Fatalf("unsafe flags: %v", args)
+		}
+		if args[len(args)-2] != "--" {
+			t.Fatalf("prompt lacks option separator: %v", args)
+		}
+		if name == "codex" && !strings.Contains(joined, "--ask-for-approval never exec --sandbox workspace-write") {
+			t.Fatalf("missing sandbox policy: %v", args)
+		}
+		if name == "claude" && !strings.Contains(joined, "--permission-mode default") {
+			t.Fatalf("missing permission policy: %v", args)
+		}
+	}
+}
+
+func TestWorkerEnvironmentDoesNotInheritSecrets(t *testing.T) {
+	t.Setenv("QI_WEB_TOKEN", "qi-parent-secret")
+	t.Setenv("OPENAI_API_KEY", "model-parent-secret")
+	t.Setenv("ANTHROPIC_API_KEY", "parent-anthropic-secret")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "cloud-parent-secret")
+	t.Setenv("LD_PRELOAD", "should-not-be-inherited")
+	parentHome := t.TempDir()
+	t.Setenv("HOME", parentHome)
+	p := fake(t, "printf '%s\\n' \"$HOME\"; env\n")
+	m := New(Config{Enabled: true, CodexPath: p, Credentials: map[string]string{"CODEX_API_KEY": "explicit-worker-key"}})
+	v, err := m.Start(context.Background(), Request{"codex", "x", t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = await(t, m, v.ID)
+	m.Close()
+	for _, secret := range []string{"qi-parent-secret", "model-parent-secret", "parent-anthropic-secret", "cloud-parent-secret", "should-not-be-inherited", parentHome} {
+		if strings.Contains(v.Output, secret) {
+			t.Fatalf("inherited protected value: %s", secret)
+		}
+	}
+	if !strings.Contains(v.Output, "CODEX_API_KEY=explicit-worker-key") {
+		t.Fatal("explicit credential missing")
+	}
+	home := strings.Split(v.Output, "\n")[0]
+	if home == "" || home == parentHome {
+		t.Fatal("private worker home missing")
+	}
+	if _, err = os.Stat(home); !os.IsNotExist(err) {
+		t.Fatalf("temporary worker home not removed: %v", err)
+	}
+}
+
+func TestWorkerCredentialsRejectDaemonTokens(t *testing.T) {
+	for _, key := range []string{"QI_WEB_TOKEN", "OPENAI_API_KEY", "HOME", "LD_PRELOAD", "PATH"} {
+		m := New(Config{Enabled: true, CodexPath: fake(t, "exit 0\n"), Credentials: map[string]string{key: "blocked"}})
+		if _, err := m.Start(context.Background(), Request{"codex", "x", t.TempDir()}); err == nil {
+			t.Fatalf("forbidden credential accepted: %s", key)
+		}
+		m.Close()
+	}
+}

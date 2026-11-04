@@ -18,3 +18,11 @@ func configureProcess(cmd *exec.Cmd) {
 		return err
 	}
 }
+
+// A CLI that exits normally may leave background descendants holding its process
+// group. Terminate that group after every exit, not only on cancellation.
+func cleanupProcess(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}
