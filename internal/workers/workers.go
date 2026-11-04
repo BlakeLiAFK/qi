@@ -245,20 +245,60 @@ type boundedBuffer struct {
 	truncated bool
 }
 
+// Write keeps the original prefix and a rolling suffix within the byte budget.
+// Once output exceeds the budget, middle bytes are discarded, never the ending.
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	n := len(p)
-	remaining := b.limit - len(b.data)
-	if n > remaining {
-		b.truncated = true
-		p = p[:remaining]
+	if n == 0 {
+		return 0, nil
 	}
-	b.data = append(b.data, p...)
+	if b.limit <= 0 {
+		b.truncated = true
+		return n, nil
+	}
+	oldLen := len(b.data)
+	if !b.truncated && n <= b.limit-oldLen {
+		b.data = append(b.data, p...)
+		return n, nil
+	}
+	b.truncated = true
+	prefixLen := b.limit / 2
+	tailLen := b.limit - prefixLen
+	if oldLen < b.limit {
+		b.data = append(b.data, make([]byte, b.limit-oldLen)...)
+	}
+	if oldLen < prefixLen {
+		copy(b.data[oldLen:prefixLen], p[:prefixLen-oldLen])
+	}
+	if n >= tailLen {
+		copy(b.data[prefixLen:], p[n-tailLen:])
+	} else {
+		keep := tailLen - n
+		copy(b.data[prefixLen:prefixLen+keep], b.data[oldLen-keep:oldLen])
+		copy(b.data[prefixLen+keep:], p)
+	}
 	return n, nil
 }
 func (b *boundedBuffer) snapshot() (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return strings.ToValidUTF8(string(b.data), "�"), b.truncated
+	// ASCII replacement keeps the returned byte count within the configured cap,
+	// including when truncation splits a multi-byte UTF-8 character.
+	valid := func(p []byte) string { return strings.ToValidUTF8(string(p), "?") }
+	if !b.truncated {
+		return valid(b.data), false
+	}
+	if b.limit <= 0 {
+		return "", true
+	}
+	marker := "\n...[output truncated]...\n"
+	if len(marker) >= b.limit {
+		marker = "~"
+	}
+	remaining := b.limit - len(marker)
+	prefixLen := remaining / 2
+	tailLen := remaining - prefixLen
+	return valid(b.data[:prefixLen]) + marker + valid(b.data[len(b.data)-tailLen:]), true
 }
