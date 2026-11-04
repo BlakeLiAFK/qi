@@ -124,3 +124,36 @@ test('question text rejects oversized multibyte answers before sending',async()=
  const card=nodes.get('conversation').children[0];const input=card.children.find(c=>c.tag==='label').children[0];input.value='你'.repeat(3000);
  await card.children.find(c=>c.tag==='button').onclick();assert.equal(requests.filter(r=>r.path.endsWith('/actions')).length,0);assert.match(nodes.get('error').textContent,/8,000 UTF-8 bytes/);
 });
+
+test('progress streams close on navigation and ignore stale or wrong-task events',async()=>{
+ const {context,requests}=setup([{id:'A',title:'A',status:'running'},{id:'B',title:'B',status:'idle'}]);await new Promise(setImmediate);
+ const streams=[];
+ context.EventSource=class {constructor(url){this.url=url;this.listeners={};streams.push(this);}addEventListener(name,fn){this.listeners[name]=fn;}close(){this.closed=true;}};
+ context.selectTask({id:'A',title:'A',status:'running'});
+ assert.equal(streams[0].url,'/api/tasks/A/events');
+ streams[0].listeners.progress({data:JSON.stringify({task_id:'A',event_id:1})});await new Promise(setImmediate);
+ assert.ok(requests.some(r=>r.path==='/api/tasks/A'));
+ context.selectTask({id:'B',title:'B',status:'idle'});assert.equal(streams[0].closed,true);
+ const before=requests.length;
+ streams[0].listeners.progress({data:JSON.stringify({task_id:'A',event_id:2})});
+ streams[1].listeners.progress({data:JSON.stringify({task_id:'A',event_id:3})});
+ streams[1].listeners.progress({data:'incomplete JSON'});await new Promise(setImmediate);
+ assert.equal(requests.length,before,'stale, malformed or cross-task events must not refresh');
+ streams[1].listeners.progress({data:JSON.stringify({task_id:'B',event_id:4})});await new Promise(setImmediate);
+ assert.ok(requests.slice(before).some(r=>r.path==='/api/tasks/B'));
+ context.selectTask(null);assert.equal(streams[1].closed,true);
+});
+
+test('answered question has a single-use explicit continuation action',async()=>{
+ const {nodes,context,fixture,requests}=setup();fixture.status='completed';fixture.cards=[{id:'q',task_id:'one',run_id:'r',kind:'question',revision:2,title:'Input',state:'answered',input_type:'text',answer:{text:'saved'}}];fixture.runs=[{id:'r',status:'completed'}];context.paint(fixture);
+ const button=nodes.get('conversation').children[0].children.find(c=>c.tag==='button');assert.equal(button.textContent,'Continue task');assert.equal(button.disabled,false);
+ const first=button.onclick();await button.onclick();await first;
+ const actions=requests.filter(r=>r.path.endsWith('/actions'));assert.equal(actions.length,1);assert.deepEqual(JSON.parse(actions[0].opts.body),{task_id:'one',card_id:'q',revision:2,action:'continue'});
+ fixture.cards[0].state='continued';context.paint(fixture);assert.equal(nodes.get('conversation').children[0].children.some(c=>c.tag==='button'),false);
+});
+
+test('cancelled and historical question continuations are disabled',()=>{
+ const {nodes,context,fixture}=setup();fixture.status='cancelled';fixture.cards=[{id:'q',task_id:'one',run_id:'old',kind:'question',revision:2,title:'Input',state:'answered',answer:{text:'saved'}}];context.paint(fixture);
+ assert.equal(nodes.get('conversation').children[0].children.find(c=>c.tag==='button').disabled,true);
+ fixture.status='completed';fixture.runs=[{id:'new'}];context.paint(fixture);assert.equal(nodes.get('conversation').children[0].children.find(c=>c.tag==='button').disabled,true);
+});

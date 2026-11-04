@@ -26,6 +26,7 @@ import (
 type daemonConfig struct {
 	database, model, baseURL, apiKey, origin, token string
 	maxSteps                                        int
+	maxConcurrent, maxQueued                        int
 	coding                                          *tasks.CodingConfig
 	mcp                                             []tasks.MCPServer
 	contextBytes                                    int
@@ -53,7 +54,7 @@ func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), erro
 			return nil, nil, err
 		}
 	}
-	engine, err := tasks.New(ctx, store, tasks.Config{Coding: c.coding, MCP: c.mcp, Skills: c.skills, Questions: c.questions, Factory: func(_ string) (*agent.Agent, error) {
+	engine, err := tasks.New(ctx, store, tasks.Config{MaxConcurrent: c.maxConcurrent, MaxQueued: c.maxQueued, Coding: c.coding, MCP: c.mcp, Skills: c.skills, Questions: c.questions, Factory: func(_ string) (*agent.Agent, error) {
 		return &agent.Agent{Model: &contextbudget.Model{Next: &provider.OpenAI{Model: c.model, BaseURL: c.baseURL, APIKey: c.apiKey}, Config: contextbudget.Config{MaxInputBytes: c.contextBytes}}, MaxSteps: c.maxSteps}, nil
 	}})
 	if err != nil {
@@ -96,6 +97,8 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	model := fs.String("model", env("OPENAI_MODEL"), "model name (or OPENAI_MODEL; required)")
 	base := fs.String("base-url", env("OPENAI_BASE_URL"), "OpenAI-compatible API root")
 	max := fs.Int("max-steps", 20, "maximum model calls per task turn")
+	maxConcurrent := fs.Int("max-concurrent", 8, "maximum concurrently executing task turns")
+	maxQueued := fs.Int("max-queued", 64, "maximum accepted task turns waiting for execution")
 	enabled := fs.Bool("enable-workers", false, "enable coding tools with per-action WebUI approvals")
 	workspace := fs.String("work-dir", "", "fixed coding workspace; required with -enable-workers (not a sandbox)")
 	var skillRoots skillRootFlags
@@ -113,6 +116,9 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	}
 	if strings.TrimSpace(*model) == "" {
 		return errors.New("set OPENAI_MODEL or pass -model")
+	}
+	if *maxConcurrent <= 0 || *maxQueued <= 0 {
+		return errors.New("max-concurrent and max-queued must be positive")
 	}
 	if *max <= 0 {
 		return errors.New("max-steps must be positive")
@@ -175,7 +181,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 		}
 		*db = filepath.Join(dir, "tasks.db")
 	}
-	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, coding: coding, mcp: mcp, contextBytes: contextBytes, skills: catalog, artifactDir: *artifactDir, questions: *questions})
+	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, maxConcurrent: *maxConcurrent, maxQueued: *maxQueued, coding: coding, mcp: mcp, contextBytes: contextBytes, skills: catalog, artifactDir: *artifactDir, questions: *questions})
 	if err != nil {
 		return err
 	}

@@ -3,18 +3,29 @@ const $=id=>document.getElementById(id);
 let skillControls=[];
 // Unsent drafts stay in memory and are keyed by the task they belong to.
 const taskDrafts=new Map();
-let selected=null, busy=false, version='', refreshRunning=false;
+let selected=null, busy=false, version='', refreshRunning=false, refreshAgain=false;
+let taskStream=null, streamTask=null;
+function watchTask(id){
+ if(streamTask===id)return;
+ if(taskStream)taskStream.close();taskStream=null;streamTask=id;
+ if(!id||typeof EventSource==='undefined')return;
+ const stream=new EventSource('/api/tasks/'+encodeURIComponent(id)+'/events');taskStream=stream;
+ const changed=()=>{if(taskStream===stream&&selected===id)refresh();};
+ stream.addEventListener('ready',changed);
+ stream.addEventListener('progress',event=>{try{const data=JSON.parse(event.data);if(data.task_id===id)changed();}catch(_){}});
+ // EventSource reconnects using Last-Event-ID. Polling remains a fallback.
+}
 function error(e){$('error').textContent=e.message||String(e);$('error').hidden=false;}
 async function api(path,body){const response=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json','X-Qi-Request':'1'},body:body===undefined?undefined:JSON.stringify(body)});if(!response.ok)throw new Error((await response.text()).trim()||'Request failed');return response.json();}
 function element(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function active(status){return ['running','queued','waiting_for_approval','waiting_for_input'].includes(status);}
 function paint(task){const signature=JSON.stringify(task)+JSON.stringify((task.approvals||[]).map(a=>Date.parse(a.expires_at)<=Date.now()))+JSON.stringify((task.cards||[]).map(c=>Date.parse(c.expires_at)<=Date.now()));$('send').disabled=busy||active(task.status);if(version===signature)return;version=signature;$('task-title').textContent=task.title;$('status').textContent=task.status;$('cancel').hidden=!active(task.status);$('send').disabled=busy||active(task.status);const panel=$('conversation');const nearBottom=panel.scrollHeight-panel.scrollTop-panel.clientHeight<100;panel.replaceChildren();paintContextNotice(task,panel);for(const msg of task.messages||[]){if(!['user','assistant','tool'].includes(msg.role))continue;const block=element('div',undefined,'message '+msg.role);block.append(element('small',msg.role==='assistant'?'QI':msg.role.toUpperCase()),element('div',msg.content||''));panel.append(block);}for(const run of task.runs||[]){if(run.error){const notice=element('section',undefined,'card');notice.append(element('h3','Run '+run.status),element('p',run.error));panel.append(notice);}}for(const card of task.cards||[]){if(card.kind==='question'){paintQuestion(task,card,panel);continue;}const block=element('section',undefined,'card');block.append(element('h3',card.title),element('p',card.summary),element('small',card.state));for(const action of card.actions||[]){const button=element('button',action.label);button.disabled=card.state!=='pending';button.onclick=async()=>{button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/actions',{card_id:card.id,action:action.id,revision:card.revision});await refresh();}catch(e){error(e);await refresh();}};block.append(button);}panel.append(block);}paintApprovals(task,panel);paintArtifacts(task,panel);if(nearBottom)panel.scrollTop=panel.scrollHeight;}
-async function refresh(){if(refreshRunning)return;refreshRunning=true;try{const tasks=await api('/api/tasks');const nav=$('tasks');nav.replaceChildren();for(const task of tasks){const button=element('button',task.title,task.id===selected?'active':'');button.append(element('small',task.status));button.onclick=()=>{if(busy)return;selectTask(task);refresh();};nav.append(button);}if(selected){const id=selected;const task=await api('/api/tasks/'+encodeURIComponent(id));task.approvals=await api('/api/tasks/'+encodeURIComponent(id)+'/approvals');task.artifacts=await api('/api/tasks/'+encodeURIComponent(id)+'/artifacts');if(selected===id)paint(task);}}catch(e){error(e);}finally{refreshRunning=false;}}
+async function refresh(){if(refreshRunning){refreshAgain=true;return;}refreshRunning=true;watchTask(selected);try{const tasks=await api('/api/tasks');const nav=$('tasks');nav.replaceChildren();for(const task of tasks){const button=element('button',task.title,task.id===selected?'active':'');button.append(element('small',task.status));button.onclick=()=>{if(busy)return;selectTask(task);refresh();};nav.append(button);}if(selected){const id=selected;const task=await api('/api/tasks/'+encodeURIComponent(id));task.approvals=await api('/api/tasks/'+encodeURIComponent(id)+'/approvals');task.artifacts=await api('/api/tasks/'+encodeURIComponent(id)+'/artifacts');if(selected===id)paint(task);}}catch(e){error(e);}finally{refreshRunning=false;if(refreshAgain){refreshAgain=false;refresh();}}}
 function selectTask(task){
  const nextID=task?task.id:null;
  if(task&&nextID===selected)return;
  if(selected!==null)taskDrafts.set(selected,$('prompt').value);
- selected=nextID;
+ selected=nextID;watchTask(selected);
  $('prompt').value=task?taskDrafts.get(nextID)||'':'';
  clearSkills();version='';$('error').hidden=true;
  $('task-title').textContent=task?task.title:'A new thread.';
@@ -99,7 +110,17 @@ function paintQuestion(task,card,panel){
  const block=element('section',undefined,'card question');
  block.append(element('h3',card.title),element('p',card.summary),element('small',card.state));
  const pending=card.state==='pending'&&Number.isFinite(Date.parse(card.expires_at))&&Date.parse(card.expires_at)>Date.now();
- if(card.answer){block.append(element('p','Answer: '+(card.answer.text||(card.choices||[]).find(c=>c.id===card.answer.choice_id)?.label||card.answer.choice_id)),element('small','Answer saved. Send a message to continue; no automatic resume.'));panel.append(block);return;}
+ if(card.answer){
+  block.append(element('p','Answer: '+(card.answer.text||(card.choices||[]).find(c=>c.id===card.answer.choice_id)?.label||card.answer.choice_id)));
+  if(card.state==='answered'){
+   block.append(element('small','Answer saved. Continue starts a new turn; it does not approve external actions.'));
+   const button=element('button','Continue task');const latestRun=(task.runs||[]).at(-1);button.disabled=task.status!=='completed'||(latestRun&&latestRun.id!==card.run_id);
+   button.onclick=async()=>{if(button.disabled)return;button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/actions',{task_id:task.id,card_id:card.id,revision:card.revision,action:'continue'});}catch(e){error(e);}finally{version='';await refresh();}};
+   block.append(button);
+   if(button.disabled)block.append(element('small','Wait for the current turn to finish. For older, cancelled or interrupted work, send a new message.'));
+  }else block.append(element('small','Continuation requested. This card cannot start another turn; interrupted work is never automatically replayed.'));
+  panel.append(block);return;
+ }
  const controls=[];const key=task.id+'/'+card.id+'/'+card.revision;
  async function submit(answer){
   for(const c of controls)c.disabled=true;

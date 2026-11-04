@@ -48,7 +48,8 @@ persisted conversation/run state, and cancels active turns. Each task gets its o
 history; concurrent tasks do not share model context. SQLite stores task messages,
 run records, and events, with WAL and committed-write recovery. One engine owns a
 database at a time. After an unclean restart, abandoned runs become interrupted;
-work is not silently replayed. The default database is `qi/tasks.db` within the OS
+work is not silently replayed. Queued turns also become interrupted on restart and
+require explicit resubmission after review. The default database is `qi/tasks.db` within the OS
 user config directory. Use `qi serve -db /private/path/tasks.db` to change it;
 the parent directory must already exist. Stored prompts and outputs are plaintext,
 not encrypted: keep the database, WAL, and backups private and outside your repository.
@@ -69,7 +70,7 @@ actual peer address, never forwarded client-IP headers; reverse-proxy users shar
 that bucket. Configure additional rate limiting at the proxy edge.
 
 `qi serve -h` lists server options. Ctrl-C or SIGTERM shuts down the server and
-cancels active runs. The UI polls state; it does not stream model tokens.
+cancels active and queued runs. The UI polls state; it does not stream model tokens.
 
 ## Task question cards
 
@@ -82,7 +83,14 @@ This explicit flag exposes only the task-local `ask_user_question` and
 Questions can request a bounded choice or short text response in the WebUI.
 Answers are recorded with the task, not treated as permission to run coding or
 MCP actions. Answering does **not** automatically resume or start a model turn;
-send a new message to continue. Do not enter passwords, API keys, or other secrets
+use the saved card’s **Continue task** button to explicitly start a new turn. The
+Question expiry applies to submitting an answer, not to an already saved answer.
+The button consumes that card once, atomically with the new run and its input.
+Duplicate clicks cannot create duplicate turns, including after restart. A crash
+after acceptance marks the run interrupted; it never automatically replays
+external work. Cards from older, cancelled, failed or interrupted runs require a
+new message instead. There is no automatic background continuation queue or
+exactly-once guarantee for external actions. Do not enter passwords, API keys, or other secrets
 in question cards. Question features are separate from execution approvals.
 
 ## Registered deliverables
@@ -133,8 +141,11 @@ In another terminal, set `QI_WEB_TOKEN` to the **same** token used by `qi serve`
 ```
 
 The attached REPL and WebUI use the same history and run state through the daemon
-API. No database file is opened by the client. A task permits one active turn;
-submitting while it is already running is rejected, not queued. `/history`
+API. No database file is opened by the client. A task permits one outstanding turn;
+submitting while it is already running or queued is rejected. Independent tasks
+wait in a durable FIFO queue once execution slots are full. The serve flags
+`-max-concurrent 8 -max-queued 64` control execution slots and waiting capacity.
+Queue-full rejects the new message without saving it. `/history`
 refreshes messages, `/wait` polls the active turn, `/cancel` requests cancellation,
 and `/quit` disconnects. Normal lines submit messages and wait for a result.
 The terminal polls at 300 ms while waiting; it does not stream tokens or receive

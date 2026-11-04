@@ -68,6 +68,7 @@ type server struct {
 	digest   [32]byte
 	mu       sync.Mutex
 	attempts map[string]loginWindow
+	streams  int
 	now      func() time.Time
 }
 
@@ -295,6 +296,10 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respond(w, task)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "events" {
+		s.events(w, r, id)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "approvals" {

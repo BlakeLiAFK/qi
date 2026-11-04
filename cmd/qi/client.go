@@ -190,7 +190,7 @@ func runAttach(ctx context.Context, args []string, in io.Reader, out, diagnostic
 					}
 				}
 			}
-			if t.Status != "running" {
+			if t.Status != "running" && t.Status != "queued" {
 				if len(t.Messages) > 0 {
 					last := t.Messages[len(t.Messages)-1]
 					if last.Role == "assistant" && last.Content != "" {
