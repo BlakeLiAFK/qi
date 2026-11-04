@@ -146,18 +146,11 @@ func (e *Engine) List(ctx context.Context) ([]Task, error) {
 	return result, nil
 }
 func (e *Engine) Get(ctx context.Context, id string) (Task, error) {
-	s, history, err := e.store.Load(ctx, id)
+	snapshot, err := e.store.LoadTaskSnapshot(ctx, id)
 	if err != nil {
 		return Task{}, err
 	}
-	runs, err := e.store.Runs(ctx, id)
-	if err != nil {
-		return Task{}, err
-	}
-	events, err := e.store.Events(ctx, id, 0)
-	if err != nil {
-		return Task{}, err
-	}
+	s, history, runs, events := snapshot.Session, snapshot.Messages, snapshot.Runs, snapshot.Events
 	t := Task{ID: id, Title: s.Title, Status: "idle", CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, Messages: history, Runs: runs, Cards: []Card{}}
 	for _, r := range runs {
 		if r.StartedAt.After(t.UpdatedAt) {
