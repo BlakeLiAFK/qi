@@ -144,3 +144,23 @@ func TestWorkersRequireFlag(t *testing.T) {
 		s.Close()
 	}
 }
+
+func TestWorkerCredentialsAreExplicit(t *testing.T) {
+	env := map[string]string{
+		"QI_CODEX_API_KEY":  "fixture-codex",
+		"QI_CLAUDE_API_KEY": "fixture-claude",
+		"OPENAI_API_KEY":    "must-not-inherit-model",
+		"QI_WEB_TOKEN":      "must-not-inherit-daemon",
+		"CODEX_API_KEY":     "must-not-inherit-ordinary-codex",
+		"ANTHROPIC_API_KEY": "must-not-inherit-ordinary-claude",
+	}
+	got := workerCredentials(func(key string) string { return env[key] })
+	if len(got) != 2 || got["CODEX_API_KEY"] != "fixture-codex" || got["ANTHROPIC_API_KEY"] != "fixture-claude" {
+		t.Fatalf("wrong dedicated credential mapping")
+	}
+	delete(env, "QI_CODEX_API_KEY")
+	delete(env, "QI_CLAUDE_API_KEY")
+	if got := workerCredentials(func(key string) string { return env[key] }); len(got) != 0 {
+		t.Fatal("ambient credentials inherited")
+	}
+}

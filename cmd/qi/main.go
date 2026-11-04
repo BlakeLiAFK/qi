@@ -69,13 +69,16 @@ func readPlugins(path string) ([]pluginEntry, error) {
 }
 
 func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.Writer, env func(string) string) error {
+	if len(args) > 0 && args[0] == "attach" {
+		return runAttach(ctx, args[1:], in, out, diagnostics, env)
+	}
 	if len(args) > 0 && args[0] == "serve" {
 		return runServer(ctx, args[1:], diagnostics, env)
 	}
 	fs := flag.NewFlagSet("qi", flag.ContinueOnError)
 	fs.SetOutput(diagnostics)
 	fs.Usage = func() {
-		fmt.Fprintln(diagnostics, "Usage: qi [flags] | qi serve [flags]\nRun qi serve -h for persistent WebUI server options.")
+		fmt.Fprintln(diagnostics, "Usage: qi [flags] | qi serve [flags] | qi attach [flags]\nRun qi serve -h for server options or qi attach -h to share daemon tasks.")
 		fs.PrintDefaults()
 	}
 	prompt := fs.String("p", "", "one-shot prompt (otherwise interactive, one line per turn)")
@@ -143,7 +146,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 			return errors.New("work-dir must be a directory")
 		}
 		fmt.Fprintf(diagnostics, "Coding workers enabled in %s. This is not a sandbox.\n", wd)
-		manager := workers.New(workers.Config{Enabled: true, Timeout: *timeout})
+		manager := workers.New(workers.Config{Enabled: true, Timeout: *timeout, Credentials: workerCredentials(env)})
 		defer manager.Close()
 		ts = append(ts, workerTools(manager, wd)...)
 	}
@@ -284,4 +287,16 @@ func taskID(b json.RawMessage) (string, error) {
 		return "", errors.New("id is required")
 	}
 	return r.ID, nil
+}
+
+// workerCredentials deliberately does not inherit model or daemon credentials.
+// These dedicated operator settings are read only when workers are enabled.
+func workerCredentials(env func(string) string) map[string]string {
+	credentials := make(map[string]string)
+	for source, target := range map[string]string{"QI_CODEX_API_KEY": "CODEX_API_KEY", "QI_CLAUDE_API_KEY": "ANTHROPIC_API_KEY"} {
+		if value := env(source); value != "" {
+			credentials[target] = value
+		}
+	}
+	return credentials
 }

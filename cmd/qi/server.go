@@ -23,10 +23,11 @@ import (
 type daemonConfig struct {
 	database, model, baseURL, apiKey, origin, token string
 	maxSteps                                        int
+	coding                                          *tasks.CodingConfig
 }
 
-// openDaemon owns one database and one engine. Web runs deliberately have no
-// external tools until a durable, task-scoped approval workflow is implemented.
+// openDaemon owns one database and one engine. Coding tools require explicit
+// operator opt-in and durable task-scoped approval before dispatch.
 func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), error) {
 	// Validate auth/origin before opening a database or triggering recovery.
 	if _, err := webui.New(webui.Config{Origin: c.origin, Token: c.token, Backend: webui.EngineBackend{}}); err != nil {
@@ -36,7 +37,7 @@ func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), erro
 	if err != nil {
 		return nil, nil, err
 	}
-	engine, err := tasks.New(ctx, store, tasks.Config{Factory: func(_ string) (*agent.Agent, error) {
+	engine, err := tasks.New(ctx, store, tasks.Config{Coding: c.coding, Factory: func(_ string) (*agent.Agent, error) {
 		return &agent.Agent{Model: &provider.OpenAI{Model: c.model, BaseURL: c.baseURL, APIKey: c.apiKey}, MaxSteps: c.maxSteps}, nil
 	}})
 	if err != nil {
@@ -68,7 +69,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	fs := flag.NewFlagSet("qi serve", flag.ContinueOnError)
 	fs.SetOutput(out)
 	fs.Usage = func() {
-		fmt.Fprintln(out, "Usage: qi serve [flags]\nQI_WEB_TOKEN (at least 32 characters) is required; browser username is qi.\nThis server supports persistent model chat only; standalone REPL sessions are separate.")
+		fmt.Fprintln(out, "Usage: qi serve [flags]\nQI_WEB_TOKEN (at least 32 characters) is required; browser username is qi.\nUse qi attach to share these tasks from the terminal. Coding tools are disabled by default.")
 		fs.PrintDefaults()
 	}
 	listen := fs.String("listen", "127.0.0.1:8686", "literal loopback listening address")
@@ -77,6 +78,9 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	model := fs.String("model", env("OPENAI_MODEL"), "model name (or OPENAI_MODEL; required)")
 	base := fs.String("base-url", env("OPENAI_BASE_URL"), "OpenAI-compatible API root")
 	max := fs.Int("max-steps", 20, "maximum model calls per task turn")
+	enabled := fs.Bool("enable-workers", false, "enable coding tools with per-action WebUI approvals")
+	workspace := fs.String("work-dir", "", "fixed coding workspace; required with -enable-workers (not a sandbox)")
+	timeout := fs.Duration("worker-timeout", 15*time.Minute, "coding worker runtime limit (maximum one hour)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -91,6 +95,18 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	}
 	if *max <= 0 {
 		return errors.New("max-steps must be positive")
+	}
+	var coding *tasks.CodingConfig
+	if *enabled {
+		if strings.TrimSpace(*workspace) == "" {
+			return errors.New("-enable-workers requires an explicit -work-dir")
+		}
+		if *timeout <= 0 || *timeout > time.Hour {
+			return errors.New("worker-timeout must be positive and at most one hour")
+		}
+		coding = &tasks.CodingConfig{Workspace: *workspace, Timeout: *timeout, Credentials: workerCredentials(env)}
+	} else if *workspace != "" {
+		return errors.New("-work-dir requires -enable-workers")
 	}
 	if err := loopbackAddress(*listen); err != nil {
 		return err
@@ -122,7 +138,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 		}
 		*db = filepath.Join(dir, "tasks.db")
 	}
-	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max})
+	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, coding: coding})
 	if err != nil {
 		return err
 	}
@@ -130,7 +146,12 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
-	fmt.Fprintf(out, "qi WebUI: %s\nSign in as qi using QI_WEB_TOKEN. Token is never printed.\nSQLite: %s\nServer tools are disabled. Standalone REPL does not share these tasks.\n", *origin, *db)
+	fmt.Fprintf(out, "qi WebUI: %s\nSign in as qi using QI_WEB_TOKEN. Token is never printed.\nSQLite: %s\nConnect from a terminal with qi attach.\n", *origin, *db)
+	if coding != nil {
+		fmt.Fprintln(out, "Coding workers enabled: every action requires approval in the WebUI. Workspace is not a sandbox.")
+	} else {
+		fmt.Fprintln(out, "Server tools are disabled.")
+	}
 	select {
 	case err := <-done:
 		if errors.Is(err, http.ErrServerClosed) {

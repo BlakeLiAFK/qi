@@ -197,3 +197,17 @@ func TestServeShutsDown(t *testing.T) {
 		t.Fatal(fmt.Sprint("missing listening URL: ", output.String()))
 	}
 }
+
+func TestServerCodingRequiresExplicitWorkspace(t *testing.T) {
+	for _, args := range [][]string{
+		{"-enable-workers"},
+		{"-work-dir", t.TempDir()},
+		{"-enable-workers", "-work-dir", t.TempDir(), "-worker-timeout", "2h"},
+	} {
+		var out bytes.Buffer
+		args = append(args, "-model", "fixture")
+		if err := runServer(context.Background(), args, &out, func(string) string { return testToken }); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}
