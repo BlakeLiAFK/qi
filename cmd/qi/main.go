@@ -68,6 +68,9 @@ func readPlugins(path string) ([]pluginEntry, error) {
 }
 
 func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.Writer, env func(string) string) error {
+	if len(args) > 0 && args[0] == "schema-inspect" {
+		return runSchemaInspect(ctx, args[1:], out, diagnostics)
+	}
 	if len(args) > 0 && (args[0] == "backup" || args[0] == "backup-verify") {
 		return runBackup(ctx, args[0], args[1:], out, diagnostics)
 	}
@@ -83,7 +86,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 	fs := flag.NewFlagSet("qi", flag.ContinueOnError)
 	fs.SetOutput(diagnostics)
 	fs.Usage = func() {
-		fmt.Fprintln(diagnostics, "Usage: qi [flags] | qi serve [flags] | qi attach [flags] | qi isolation-preflight | qi backup | qi backup-verify\nRun qi serve -h for server options or qi attach -h to share daemon tasks.\nQI_MAX_CONTEXT_BYTES sets serialized input budget (default 262144 bytes, not tokens).")
+		fmt.Fprintln(diagnostics, "Usage: qi [flags] | qi serve [flags] | qi attach [flags] | qi isolation-preflight | qi backup | qi backup-verify | qi schema-inspect\nRun qi serve -h for server options or qi attach -h to share daemon tasks.\nQI_MAX_CONTEXT_BYTES sets serialized input budget (default 262144 bytes, not tokens).")
 		fs.PrintDefaults()
 	}
 	prompt := fs.String("p", "", "one-shot prompt (otherwise interactive, one line per turn)")

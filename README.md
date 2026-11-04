@@ -108,6 +108,8 @@ change the database location; its private parent directory must already exist. S
 not encrypted: keep the database, WAL, and backups private and outside your repository.
 The task list marks unread terminal results; [read-state semantics](docs/unread-results.md)
 explain exact-run acknowledgments and the shared single-owner watermark.
+Use `qi schema-inspect -source PATH` for [read-only SQLite diagnostics](docs/schema-inspect.md);
+it does not decide compatibility or migrate the database.
 Use explicit `qi backup` and `qi backup-verify` commands for consistent local snapshots;
 see [database backup and verification](docs/database-backup.md).
 

@@ -1,6 +1,9 @@
 # Database versioning and safe migration plan
 
-Status: **design only, not implemented**. Reviewed against the current source on
+Status: **migration/compatibility plan, not implemented**. A standalone
+[read-only diagnostic command](schema-inspect.md) is available; it does not
+implement the startup refusal gate, adoption or migration described below.
+Reviewed against the current source on
 2026-11-04. This document does not assert that existing startup is an atomic
 upgrade, that historical releases have been certified, or that downgrade is
 prevented. All proposed verification uses test-owned databases.
