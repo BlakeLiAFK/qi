@@ -198,6 +198,16 @@ func (c *Catalog) Collisions() []Collision { return append([]Collision(nil), c.c
 // nothing. Unknown names and duplicates fail without returning partial results.
 // Callers must treat all returned instructions as untrusted content.
 func (c *Catalog) Select(ctx context.Context, names []string) ([]Instruction, error) {
+	return c.SelectBounded(ctx, names, int64(c.limits.MaxSkills)*c.limits.MaxFileBytes)
+}
+
+// SelectBounded additionally caps the aggregate bytes read from selected files,
+// including frontmatter. It returns no partial selection when the budget fails.
+func (c *Catalog) SelectBounded(ctx context.Context, names []string, maxBytes int64) ([]Instruction, error) {
+	if maxBytes < 0 {
+		return nil, errors.New("negative selection byte budget")
+	}
+	remaining := maxBytes
 	if len(names) > c.limits.MaxSkills {
 		return nil, errors.New("too many selected skills")
 	}
@@ -215,7 +225,11 @@ func (c *Catalog) Select(ctx context.Context, names []string) ([]Instruction, er
 			return nil, fmt.Errorf("duplicate selection %q", name)
 		}
 		seen[name] = true
-		f, resolved, err := openContained(e.root, e.original, c.limits.MaxFileBytes)
+		fileLimit := c.limits.MaxFileBytes
+		if remaining < fileLimit {
+			fileLimit = remaining
+		}
+		f, resolved, err := openContained(e.root, e.original, fileLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -223,14 +237,15 @@ func (c *Catalog) Select(ctx context.Context, names []string) ([]Instruction, er
 			f.Close()
 			return nil, fmt.Errorf("skill %q path changed; rediscover", name)
 		}
-		data, err := io.ReadAll(io.LimitReader(f, c.limits.MaxFileBytes+1))
+		data, err := io.ReadAll(io.LimitReader(f, fileLimit+1))
 		f.Close()
 		if err != nil {
 			return nil, err
 		}
-		if int64(len(data)) > c.limits.MaxFileBytes {
+		if int64(len(data)) > fileLimit {
 			return nil, errors.New("skill file size limit exceeded")
 		}
+		remaining -= int64(len(data))
 		n, d, offset, err := header(strings.NewReader(string(data)), c.limits.MaxHeaderBytes)
 		if err != nil {
 			return nil, err

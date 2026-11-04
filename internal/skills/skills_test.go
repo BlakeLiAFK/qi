@@ -172,3 +172,54 @@ func TestNoRecursiveDiscovery(t *testing.T) {
 		t.Fatal("recursive discovery")
 	}
 }
+
+func TestLoadRechecksContainment(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	path := filepath.Join(root, "SKILL.md")
+	write(t, path, document("test", "hello", "inside"))
+	write(t, filepath.Join(outside, "SKILL.md"), document("test", "hello", "outside"))
+	c := discover(t, Root{"project", root})
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "SKILL.md"), path); err != nil {
+		t.Skip(err)
+	}
+	if _, err := c.Select(context.Background(), []string{"test"}); err == nil {
+		t.Fatal("load followed escaping symlink")
+	}
+}
+
+func TestLimitCeilings(t *testing.T) {
+	for _, l := range []Limits{{MaxRoots: 1025}, {MaxEntries: 1000001}, {MaxSkills: 4097}, {MaxFileBytes: 17 * 1024 * 1024}, {MaxHeaderBytes: 2 * 1024 * 1024}} {
+		if _, err := Discover(context.Background(), Config{Limits: l}); err == nil {
+			t.Fatalf("accepted %+v", l)
+		}
+	}
+}
+
+func FuzzHeader(f *testing.F) {
+	f.Add(document("test", "hello", "body"))
+	f.Add("---\nname: test\ndescription: \"quoted\"\n---\n")
+	f.Add("---\nname: bad\n")
+	f.Fuzz(func(t *testing.T, input string) {
+		n, d, offset, err := header(strings.NewReader(input), 16384)
+		if err == nil && (!validName(n) || d == "" || offset < 0 || offset > len(input) || offset > 16384) {
+			t.Fatal("invalid successful parse")
+		}
+	})
+}
+
+func TestSelectionAggregateByteBudget(t *testing.T) {
+	root := t.TempDir()
+	content := document("one", "hello", "body")
+	write(t, filepath.Join(root, "one", "SKILL.md"), content)
+	write(t, filepath.Join(root, "two", "SKILL.md"), document("two", "hello", "body"))
+	c := discover(t, Root{"project", root})
+	if got, err := c.SelectBounded(context.Background(), []string{"one", "two"}, int64(len(content)*2-1)); err == nil || got != nil {
+		t.Fatal("aggregate budget bypassed", got, err)
+	}
+	if got, err := c.SelectBounded(context.Background(), []string{"one", "two"}, int64(len(content)*2)); err != nil || len(got) != 2 {
+		t.Fatal(got, err)
+	}
+}
