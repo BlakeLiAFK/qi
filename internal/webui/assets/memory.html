@@ -2,7 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>qi · Saved memory</title><link rel="stylesheet" href="/style.css"><script src="/memory.js" defer></script></head>
 <body class="memory-page"><aside><a class="brand" href="/">qi</a><p>Saved memory</p><a href="/">Back to tasks</a></aside><main>
 <header><h1>Saved memory</h1><button id="memory-logout" type="button" hidden>Sign out</button></header>
-<p>Optional local records you create yourself. Nothing here is extracted automatically or sent to a model. Using saved memory in model turns is not available yet.</p>
+<p>Optional local records you create yourself. Nothing here is extracted automatically. Saving alone never sends a record to a model. The task composer supports opt-in selection for one turn after you review the exact provider destination and approve disclosure.</p>
 <p>Do not save passwords, credentials, sensitive personal information or private information about children. Records and older revisions are stored as plaintext in the local database.</p>
 <p id="memory-error" role="alert" hidden></p>
 <section id="memory-protected" hidden>
@@ -21,5 +21,5 @@
 <button id="memory-save" type="submit">Save this record locally</button><button id="memory-cancel" type="button">Cancel edit / clear form</button>
 </form>
 </section>
-<p>Deletion removes all revisions from live memory queries. It does not erase SQLite free pages, WAL files, backups, exports or existing conversations. No forensic erasure is promised.</p>
+<p>Deletion removes all revisions from live memory queries. It does not erase SQLite free pages, WAL files, backups, exports or existing conversations or accepted run audit snapshots. Accepted queued or running snapshots survive source edits and deletion; cancel the task to stop pending disclosure. Cancellation cannot retract facts already sent. No forensic erasure is promised.</p>
 </main></body></html>

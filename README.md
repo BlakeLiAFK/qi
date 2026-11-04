@@ -577,6 +577,10 @@ provider you trust with the full conversation and tool outputs.
 The WebUI’s **Manage saved memory** link opens authenticated local management.
 Choose one task or explicitly choose global, then create, inspect revisions, edit
 or delete your own records. Nothing is selected by default or sent to models.
-Per-turn model use is not implemented. Do not save credentials or sensitive
-personal information. Records are plaintext; deletion removes all live revisions,
-not backups or SQLite remnants. See [boundaries and API](docs/explicit-memory.md).
+The composer can explicitly select individual current revisions for one turn
+after you confirm that those facts will be sent to the configured model provider.
+Selection grants no tools or access to other tasks and resets after acceptance.
+Run audit snapshots remain available after source deletion; model replies may
+quote facts into ordinary conversation history. Do not save credentials or
+sensitive personal information. Records are plaintext; deletion removes live
+curated revisions, not run snapshots, backups or SQLite remnants. See [boundaries and API](docs/explicit-memory.md).

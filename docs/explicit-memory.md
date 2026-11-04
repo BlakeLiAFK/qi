@@ -1,9 +1,8 @@
 # Explicit curated memory management
 
 This is a deliberately narrow implementation of design-plan section 9.4. It is
-**authenticated local CRUD management, not a model memory capability**. Normal
-sessions, tasks, transcripts, provider requests, and context building do not read
-or write these records. There is no automatic extraction, inference, background
+**authenticated local CRUD management with explicit per-turn selection**. Normal
+sessions and tasks do not automatically read or write these records. There is no automatic extraction, inference, background
 learning, embedding service, FTS index, or cross-task recall.
 
 ## API and integration boundary
@@ -71,15 +70,53 @@ Sensitive/secret classification values and missing owner declarations are refuse
 but dishonest or mistaken declarations cannot be detected. No semantic secret
 filter is claimed. Do not store credentials or sensitive personal information.
 
-Before including any record in a provider request, a future context builder must
-obtain explicit selection for the destination task and identify that provider
-transmission. A global storage approval is **not** permission to inject the fact
-into every task, channel, project, workspace, provider, or subagent. Even a public
-record is not automatically exposed. Present selected facts as untrusted reference
-data with provenance, confidence and update time, never as system instructions or
-permission grants. Revalidate selection at request construction; do not retain an
-unbounded context cache. A previously returned snapshot cannot be revoked in-place.
-This initial slice deliberately does not install context integration.
+## Explicit per-turn transmission
+
+Open the composer's saved-facts picker, explicitly choose this task or global,
+review individual facts and their source/revision, select records and confirm
+transmission to the displayed provider, model and exact request endpoint. The
+public destination metadata excludes credentials, query strings and fragments.
+Unsafe destination metadata disables selection. Nothing is preselected; scope
+changes, navigation, sign-out and successful acceptance clear the selection.
+Closing the picker before sending clears it. An uncertain submission retains the
+same request and idempotency key for a safe retry. Changed selection is a new request.
+
+`POST /api/tasks/{task}/messages` accepts `memory` containing at most 32
+`{id, revision, global}` selectors plus `memory_disclosed: true`. Memory requires
+an idempotency key and the reviewed `memory_destination` ID from authenticated
+`GET /api/memory-destination`. That ID binds provider, model and request endpoint.
+A different configuration requires fresh review for new admissions. Already
+accepted retries return the original run without dispatching again, even when
+the current destination differs. There is no caller-supplied other-task selector. Non-global
+IDs must belong to the destination task; global IDs require explicit global
+selection. Unknown, deleted, expired, duplicate or stale revisions fail closed.
+The combined prompt, skill references and serialized memory must fit the engine's
+prompt budget. Empty selection follows the existing provider path unchanged.
+
+The admission transaction validates current scope/revision/expiry, saves the full
+versioned records (including source, approval, confidence and timestamps) in
+`turn_memory`, and saves the exact destination audit metadata, binding destination, semantic
+selection and prompt to the idempotency key.
+Retries, including after restart or source edits/deletion/expiry, return the
+original admission without re-reading records or making another provider call.
+A new submission must pass current validation. Each provider call rechecks snapshot
+expiry, including after queued waits or tool execution, and fails the run if expired.
+
+Only the accepted run's request projection includes these snapshots as labeled
+untrusted reference data appended to its user message. Stored chat messages remain
+unchanged; later turns and question-continuation runs do not inherit selected
+snapshots. Tool definitions, authorization and provider transports are unchanged.
+The model can quote facts into its ordinary replies, which remain conversation
+history. Labels do not guarantee resistance to prompt injection and never confer
+authority. There is no extraction, automatic recall or expanded cross-task access.
+
+The task view exposes collapsed audit snapshots by run, not a promise that a
+provider received them: cancelled/failed admissions may never send data. Editing
+or deleting a curated record does not erase previously accepted run snapshots or
+revoke data already sent to the provider. Queued/running submissions retain their
+accepted snapshots even after edits/deletion; cancel the task to stop pending
+disclosure (already-sent requests cannot be recalled). No CLI selector or model memory tool is
+installed.
 
 ## Limits and privacy
 
@@ -118,7 +155,8 @@ remain the integration gate. `go test ./internal/webui` covers authenticated
 CRUD, explicit confirmation, server-generated approval labels, scope isolation,
 revision conflicts and deletion of all live versions. `node --test
 internal/webui/memory_test.cjs` tests scope switching, repeated clicks, cancellation,
-confirmation invalidation and expired-session clearing. No CLI, model tool or
-provider/context integration is included. Per-turn selection with exact provider
-disclosure and queue-safe consent remains future work; saving a record never
-sends it to a model.
+confirmation invalidation and expired-session clearing. Task and WebUI tests additionally cover per-run selection, cross-task/global
+isolation, revision/expiry rejection, size limits, concurrent retry and restart
+idempotency, no implicit later-turn carry-over, audit preservation after deletion,
+explicit disclosure, stale UI responses and selection reset. Saving a record alone
+never sends it to a model. No live provider calls are used in these tests.

@@ -58,30 +58,33 @@ type ContextNotice struct {
 	InputBytes      int    `json:"input_bytes"`
 }
 type Task struct {
-	Archived      bool            `json:"archived"`
-	LiveText      *LiveText       `json:"live_text,omitempty"`
-	ContextNotice *ContextNotice  `json:"context_notice,omitempty"`
-	ID            string          `json:"id"`
-	Title         string          `json:"title"`
-	Status        string          `json:"status"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	Messages      []agent.Message `json:"messages"`
-	Runs          []Run           `json:"runs"`
-	Cards         []Card          `json:"cards"`
+	Archived           bool                                 `json:"archived"`
+	LiveText           *LiveText                            `json:"live_text,omitempty"`
+	ContextNotice      *ContextNotice                       `json:"context_notice,omitempty"`
+	ID                 string                               `json:"id"`
+	Title              string                               `json:"title"`
+	Status             string                               `json:"status"`
+	CreatedAt          time.Time                            `json:"created_at"`
+	UpdatedAt          time.Time                            `json:"updated_at"`
+	Messages           []agent.Message                      `json:"messages"`
+	MemorySelections   map[string][]session.MemoryRecord    `json:"memory_selections,omitempty"`
+	MemoryDestinations map[string]session.MemoryDestination `json:"memory_destinations,omitempty"`
+	Runs               []Run                                `json:"runs"`
+	Cards              []Card                               `json:"cards"`
 }
 type Config struct {
-	Artifacts      *artifacts.Service
-	Questions      bool
-	Skills         *skills.Catalog
-	MCP            []MCPServer
-	Coding         *CodingConfig
-	Factory        func(taskID string) (*agent.Agent, error)
-	MaxTasks       int
-	MaxConcurrent  int
-	MaxQueued      int
-	MaxMessages    int
-	MaxPromptBytes int
+	MemoryDestination session.MemoryDestination
+	Artifacts         *artifacts.Service
+	Questions         bool
+	Skills            *skills.Catalog
+	MCP               []MCPServer
+	Coding            *CodingConfig
+	Factory           func(taskID string) (*agent.Agent, error)
+	MaxTasks          int
+	MaxConcurrent     int
+	MaxQueued         int
+	MaxMessages       int
+	MaxPromptBytes    int
 }
 type active struct {
 	cancel  context.CancelFunc
@@ -241,6 +244,14 @@ func (e *Engine) Get(ctx context.Context, id string) (Task, error) {
 			t.Cards = append(t.Cards, c)
 		}
 	}
+	t.MemorySelections, err = e.store.TaskTurnMemory(ctx, id)
+	if err != nil {
+		return Task{}, err
+	}
+	t.MemoryDestinations, err = e.store.TaskMemoryDestinations(ctx, id)
+	if err != nil {
+		return Task{}, err
+	}
 	t.LiveText = projectLiveText(id, events, runs)
 	return t, nil
 }
@@ -253,7 +264,7 @@ func (e *Engine) Events(ctx context.Context, id string, after int64) ([]Event, e
 func (e *Engine) Start(ctx context.Context, id, prompt string) (Run, error) {
 	return e.start(ctx, id, prompt, nil)
 }
-func (e *Engine) start(ctx context.Context, id, prompt string, identity *session.AdmissionIdentity) (Run, error) {
+func (e *Engine) start(ctx context.Context, id, prompt string, identity *session.AdmissionIdentity, memory ...session.MemorySelection) (Run, error) {
 	if len(prompt) > e.cfg.MaxPromptBytes {
 		return Run{}, errors.New("message exceeds size limit")
 	}
@@ -288,7 +299,7 @@ func (e *Engine) start(ctx context.Context, id, prompt string, identity *session
 	if identity != nil {
 		identities = append(identities, *identity)
 	}
-	run, err := e.store.AcceptQueued(ctx, id, s.Revision, history, "", nil, e.cfg.MaxQueued, identities...)
+	run, err := e.store.AcceptQueuedMemory(ctx, id, s.Revision, history, "", nil, e.cfg.MaxQueued, memory, e.cfg.MaxPromptBytes-len(prompt)-len(turnMemoryLabel), e.cfg.MemoryDestination, identities...)
 	if errors.Is(err, session.ErrRunActive) {
 		return Run{}, ErrBusy
 	}
@@ -344,6 +355,18 @@ func (e *Engine) execute(ctx context.Context, id string, run Run, runner *agent.
 	}()
 	// Copy the runner so factories may safely return a template.
 	copyRunner := *runner
+	snapshots, memoryErr := e.store.TurnMemory(ctx, id, run.ID)
+	if memoryErr != nil {
+		status := "failed"
+		if ctx.Err() != nil {
+			status = "cancelled"
+		}
+		e.finishExecution(run.ID, status, memoryErr.Error())
+		return
+	}
+	if len(snapshots) > 0 {
+		copyRunner.Model = turnMemoryModel{base: runner.Model, records: snapshots, userIndex: len(history) - 1}
+	}
 	if e.cfg.Questions {
 		copyRunner.Tools = append(append([]agent.Tool(nil), runner.Tools...), questionTool{engine: e, taskID: id, runID: run.ID}, questionAnswersTool{engine: e, taskID: id})
 	}

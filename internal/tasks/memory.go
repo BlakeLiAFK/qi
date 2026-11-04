@@ -22,3 +22,5 @@ func (e *Engine) DeleteMemory(ctx context.Context, scope session.MemoryScope, id
 func (e *Engine) MemoryHistory(ctx context.Context, scope session.MemoryScope, id string) ([]session.MemoryRecord, error) {
 	return e.store.MemoryHistory(ctx, scope, id)
 }
+
+func (e *Engine) MemoryDestination() session.MemoryDestination { return e.cfg.MemoryDestination }

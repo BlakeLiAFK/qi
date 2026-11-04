@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"gopi/internal/session"
+	"gopi/internal/tasks"
 	"net/http"
 	"strings"
 )
@@ -134,4 +135,35 @@ func (s *server) memory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, result)
+}
+
+type MemorySubmissionBackend interface {
+	SubmitWithMemory(context.Context, string, string, string, []string, []session.MemorySelection, bool, string) (tasks.Run, error)
+}
+
+func (b EngineBackend) SubmitWithMemory(ctx context.Context, id, key, prompt string, names []string, selected []session.MemorySelection, disclosed bool, destination string) (tasks.Run, error) {
+	return b.Engine.SubmitWithMemory(ctx, id, "local-owner", key, prompt, names, selected, disclosed, destination)
+}
+
+func (b EngineBackend) MemoryDestination() session.MemoryDestination {
+	return b.Engine.MemoryDestination()
+}
+func (s *server) memoryDestination(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	b, ok := s.cfg.Backend.(interface {
+		MemoryDestination() session.MemoryDestination
+	})
+	if !ok {
+		http.Error(w, "memory destination unavailable", 503)
+		return
+	}
+	d := b.MemoryDestination()
+	if d.ID == "" {
+		http.Error(w, "memory destination unavailable", 503)
+		return
+	}
+	respond(w, d)
 }

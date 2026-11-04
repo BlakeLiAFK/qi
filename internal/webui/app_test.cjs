@@ -289,3 +289,95 @@ test('archive filter clears composer and preserves drafts without crossing tasks
  nodes.get('show-archived').checked=true;nodes.get('show-archived').onchange();await new Promise(setImmediate);assert.equal(prompt.value,'');assert.equal(nodes.get('tasks').children.length,0);
  nodes.get('show-archived').checked=false;nodes.get('show-archived').onchange();await new Promise(setImmediate);nodes.get('tasks').children[0].onclick();await new Promise(setImmediate);assert.equal(prompt.value,'A only');
 });
+
+async function memoryPickerFixture(){
+ const state=setup();await new Promise(setImmediate);
+ const {context,requests}=state,original=context.fetch;
+ state.records=[{id:'fact-one',revision:3,content:'<script>fact</script>',source_ref:'user supplied note'},{id:'fact-two',revision:1,content:'Second fact',source_ref:'manual'}];
+ context.fetch=async(path,opts)=>{if(path==='/api/memory-destination'){requests.push({path,opts});return {ok:true,json:async()=>({id:'dest-one',provider:'Example provider',model:'example-model',endpoint:'https://provider.example/v1'})};}if(path.startsWith('/api/memory?')){requests.push({path,opts});return {ok:true,json:async()=>state.records};}return original(path,opts);};
+ state.open=async(scope='task')=>{context.document.getElementById('memory-picker').open=true;await context.document.getElementById('memory-picker').ontoggle();context.document.getElementById('turn-memory-scope').value=scope;await context.loadTurnMemory();};
+ state.inputs=()=>state.nodes.get('turn-memory-list').children.filter(n=>n.tag==='label').map(n=>n.children[0]);
+ return state;
+}
+test('memory requires explicit opening and scope; safe content, source and revision shown unchecked',async()=>{
+ const s=await memoryPickerFixture(),{context,nodes,requests}=s;
+ context.selectTask({id:'one',title:'One',status:'idle'});await context.refresh();
+ assert.equal(requests.some(r=>r.path.startsWith('/api/memory?')),false);
+ nodes.get('memory-picker').open=true;nodes.get('memory-picker').ontoggle();
+ assert.equal(requests.some(r=>r.path.startsWith('/api/memory?')),false,'opening does not choose a scope');
+ await s.open();assert.equal(requests.find(r=>r.path.startsWith('/api/memory?')).path,'/api/memory?task_id=one');
+ assert.ok(s.inputs().every(i=>i.checked===false));
+ const text=nodes.get('turn-memory-list').children[0].children[1].children;
+ assert.equal(text[1].textContent,'<script>fact</script>');assert.equal(text[1].children.length,0);
+ assert.match(text[2].textContent,/user supplied note.*Revision: 3.*fact-one/);
+ await s.open('global');assert.equal(requests.filter(r=>r.path.startsWith('/api/memory?')).at(-1).path,'/api/memory?global=true');
+ const html=fs.readFileSync(__dirname+'/assets/index.html','utf8');assert.match(html,/configured model provider for this turn only/);assert.match(html,/not instructions or permission to run tools/);
+});
+test('memory disclosure is explicit, selection changes invalidate consent, and acceptance resets all choices',async()=>{
+ const s=await memoryPickerFixture(),{context,nodes,requests}=s;context.selectTask({id:'one',title:'One',status:'idle'});await s.open();
+ context.document.getElementById('prompt').value='Use selected facts';s.inputs()[0].checked=true;s.inputs()[0].onchange();
+ await nodes.get('composer').onsubmit({preventDefault(){}});assert.equal(requests.some(r=>r.path.endsWith('/messages')),false);assert.match(nodes.get('error').textContent,/Confirm disclosure/);
+ nodes.get('turn-memory-consent').checked=true;s.inputs()[1].checked=true;s.inputs()[1].onchange();assert.equal(nodes.get('turn-memory-consent').checked,false);
+ s.inputs()[1].checked=false;s.inputs()[1].onchange();nodes.get('turn-memory-consent').checked=true;
+ await nodes.get('composer').onsubmit({preventDefault(){}});
+ const sent=JSON.parse(requests.find(r=>r.path.endsWith('/messages')).opts.body);
+ assert.deepEqual(sent.memory,[{id:'fact-one',revision:3,global:false}]);assert.equal(sent.memory_disclosed,true);
+ assert.equal(nodes.get('turn-memory-consent').checked,false);assert.equal(nodes.get('turn-memory-list').children.length,0);assert.equal(nodes.get('memory-picker').open,false);
+ context.document.getElementById('prompt').value='Next message';await nodes.get('composer').onsubmit({preventDefault(){}});
+ const next=JSON.parse(requests.filter(r=>r.path.endsWith('/messages')).at(-1).opts.body);assert.equal(next.memory,undefined);assert.equal(next.memory_disclosed,undefined);
+});
+test('memory lost acceptance retries identical payload/key and changed revision gets a different identity',async()=>{
+ const s=await memoryPickerFixture(),{context,nodes,requests}=s;context.selectTask({id:'one',title:'One',status:'idle'});await s.open('global');
+ s.inputs()[0].checked=true;nodes.get('turn-memory-consent').checked=true;context.document.getElementById('prompt').value='Use this fact';
+ const original=context.fetch;let failures=1;context.fetch=async(path,opts)=>{if(path.endsWith('/messages')&&failures-->0){requests.push({path,opts});throw new Error('Lost response');}return original(path,opts);};
+ await nodes.get('composer').onsubmit({preventDefault(){}});assert.equal(s.inputs()[0].checked,true);assert.equal(nodes.get('turn-memory-consent').checked,true);
+ await nodes.get('composer').onsubmit({preventDefault(){}});const sent=requests.filter(r=>r.path.endsWith('/messages'));assert.equal(sent[0].opts.body,sent[1].opts.body);
+ assert.equal(JSON.parse(sent[0].opts.body).memory[0].global,true);
+ const a=context.submissionKey('one','same',[],[{id:'f',revision:1,global:false}]);
+ assert.notEqual(a,context.submissionKey('one','same',[],[{id:'f',revision:2,global:false}]));
+ assert.notEqual(a,context.submissionKey('one','same',[],[{id:'f',revision:1,global:true}]));
+});
+test('scope changes, close, navigation and logout clear memory consent and ignore late lists',async()=>{
+ const s=await memoryPickerFixture(),{context,nodes}=s;context.selectTask({id:'one',title:'One',status:'idle'});await s.open();s.inputs()[0].checked=true;nodes.get('turn-memory-consent').checked=true;
+ await s.open('global');assert.equal(nodes.get('turn-memory-consent').checked,false);assert.ok(s.inputs().every(i=>!i.checked));
+ nodes.get('memory-picker').open=false;nodes.get('memory-picker').ontoggle();assert.equal(nodes.get('turn-memory-list').children.length,0);
+ await s.open();let resolve;context.fetch=async()=>({ok:true,json:()=>new Promise(r=>{resolve=r;})});
+ const pending=context.loadTurnMemory();await new Promise(setImmediate);context.selectTask({id:'two',title:'Two',status:'idle'});resolve(s.records);await pending;
+ assert.equal(nodes.get('turn-memory-list').children.length,0);assert.equal(nodes.get('turn-memory-scope').value,'');assert.equal(nodes.get('turn-memory-consent').checked,false);
+ // A stale response after sign-out must not reveal records either.
+ nodes.get('memory-picker').open=true;vm.runInContext("turnMemoryDestination={id:'dest'}",context);nodes.get('turn-memory-scope').value='global';const late=context.loadTurnMemory();await new Promise(setImmediate);context.finishSignOut();resolve(s.records);await late;assert.equal(nodes.get('turn-memory-list').children.length,0);
+});
+test('new tasks only list global records, expired records are disabled and oversized selections blocked',async()=>{
+ const s=await memoryPickerFixture(),{context,nodes,requests}=s;await s.open();assert.equal(requests.some(r=>r.path.startsWith('/api/memory?')),false);assert.equal(nodes.get('turn-memory-task').disabled,true);
+ s.records=[{id:'old',revision:1,content:'Expired',expires_at:'2000-01-01T00:00:00Z'}];await s.open('global');assert.equal(s.inputs()[0].disabled,true);
+ s.records=Array.from({length:33},(_,i)=>({id:'f'+i,revision:1,content:'Fact'}));await s.open('global');for(const input of s.inputs())input.checked=true;nodes.get('turn-memory-consent').checked=true;context.document.getElementById('prompt').value='Too many facts';await nodes.get('composer').onsubmit({preventDefault(){}});assert.equal(requests.some(r=>r.opts.method==='POST'),false);assert.match(nodes.get('error').textContent,/at most 32/);
+});
+test('past memory snapshot is collapsed, safe, revision-scoped and never selected for new runs',()=>{
+ const {context,nodes,fixture,requests}=setup();fixture.cards=[];fixture.memory_selections={'run-old':[{id:'fact',revision:2,content:'<img src=x>',source_ref:'saved note',scope:{global:true}}]};
+ context.paint(fixture);const audit=nodes.get('conversation').children[0];assert.equal(audit.tag,'details');assert.notEqual(audit.open,true);assert.match(audit.children[0].textContent,/run-old/);assert.match(audit.children[1].textContent,/not confirmation of provider delivery/);assert.equal(audit.children[3].textContent,'<img src=x>');assert.equal(audit.children[3].children.length,0);assert.match(audit.children[4].textContent,/Global.*saved note.*Revision: 2/);assert.equal(vm.runInContext('turnMemoryControls.length',context),0);assert.equal(requests.some(r=>r.path.startsWith('/api/memory?')),false);
+ const html=fs.readFileSync(__dirname+'/assets/index.html','utf8');assert.match(html,/audit snapshot, even after a saved record is deleted/);assert.match(html,/Model replies may quote facts into ordinary conversation history/);
+});
+test('memory destination is reviewed explicitly, payload-bound and refreshed only on picker opening',async()=>{
+ const s=await memoryPickerFixture(),{context,nodes,requests}=s;context.selectTask({id:'one',title:'One',status:'idle'});
+ assert.equal(requests.some(r=>r.path==='/api/memory-destination'),false);await s.open('global');
+ assert.match(nodes.get('turn-memory-destination').textContent,/Example provider.*example-model.*https:\/\/provider.example\/v1/);
+ s.inputs()[0].checked=true;nodes.get('turn-memory-consent').checked=true;context.document.getElementById('prompt').value='Selected';await context.refresh();
+ assert.equal(requests.filter(r=>r.path==='/api/memory-destination').length,1);
+ await nodes.get('composer').onsubmit({preventDefault(){}});const sent=JSON.parse(requests.find(r=>r.path.endsWith('/messages')).opts.body);assert.equal(sent.memory_destination,'dest-one');
+ const selections=[{id:'f',revision:1,global:true}];assert.notEqual(context.submissionKey('one','test',[],selections,'old'),context.submissionKey('one','test',[],selections,'new'));
+ await s.open('global');s.inputs()[0].checked=true;nodes.get('turn-memory-consent').checked=true;
+ const original=context.fetch;context.fetch=async(path,opts)=>path==='/api/memory-destination'?{ok:true,json:async()=>({id:'dest-two',provider:'Changed provider',model:'changed-model',endpoint:'https://changed.example/v1'})}:original(path,opts);
+ nodes.get('memory-picker').open=false;nodes.get('memory-picker').ontoggle();await s.open('global');assert.match(nodes.get('turn-memory-destination').textContent,/Changed provider.*changed-model.*changed.example/);assert.equal(nodes.get('turn-memory-consent').checked,false);assert.ok(s.inputs().every(i=>!i.checked));
+});
+test('missing or late destination fails closed and cannot repopulate another task',async()=>{
+ const s=await memoryPickerFixture(),{context,nodes,requests}=s;context.selectTask({id:'one',title:'One',status:'idle'});const original=context.fetch;
+ context.fetch=async(path,opts)=>path==='/api/memory-destination'?{ok:true,json:async()=>({id:'incomplete',provider:'Unknown'})}:original(path,opts);
+ await s.open('global');assert.equal(nodes.get('turn-memory').disabled,true);assert.equal(s.inputs().length,0);assert.equal(requests.some(r=>r.path.startsWith('/api/memory?')),false);assert.match(nodes.get('turn-memory-destination').textContent,/Cannot verify/);
+ let resolve;context.fetch=async()=>({ok:true,json:()=>new Promise(r=>{resolve=r;})});nodes.get('memory-picker').open=true;const pending=nodes.get('memory-picker').ontoggle();await new Promise(setImmediate);context.selectTask({id:'two',title:'Two',status:'idle'});resolve({id:'late',provider:'Late',model:'late',endpoint:'https://late.example'});await pending;assert.equal(nodes.get('turn-memory-destination').textContent,'');assert.equal(nodes.get('turn-memory').disabled,true);assert.equal(vm.runInContext('turnMemoryDestination',context),null);
+});
+test('audit shows original provider destination and deletion text explains accepted snapshots',()=>{
+ const {context,nodes,fixture}=setup();fixture.cards=[];fixture.memory_selections={r:[{id:'f',revision:1,content:'Fact',source_ref:'note',scope:{global:true}}]};fixture.memory_destinations={r:{id:'old-dest',provider:'Original provider',model:'Original model',endpoint:'https://original.example'}};context.paint(fixture);
+ assert.match(nodes.get('conversation').children[0].children[2].textContent,/Original provider.*Original model.*https:\/\/original.example/);
+ for(const name of ['index.html','memory.html']){const html=fs.readFileSync(__dirname+'/assets/'+name,'utf8');assert.match(html,/Accepted queued or running snapshots survive source edits and deletion/);assert.match(html,/[Cc]ancel the task to stop pending disclosure/);}
+ assert.match(fs.readFileSync(__dirname+'/assets/memory.html','utf8'),/Saving alone never sends/);
+});

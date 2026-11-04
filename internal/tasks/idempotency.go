@@ -15,6 +15,13 @@ import (
 // skill file contents or prior conversation. Retry uses the accepted snapshot.
 // principal must come from the authenticated server, never a request body.
 func (e *Engine) Submit(ctx context.Context, id, principal, key, prompt string, names []string) (Run, error) {
+	return e.SubmitWithMemory(ctx, id, principal, key, prompt, names, nil, false, "")
+}
+
+func (e *Engine) SubmitWithMemory(ctx context.Context, id, principal, key, prompt string, names []string, selected []session.MemorySelection, disclosed bool, destination string) (Run, error) {
+	if len(selected) > 0 && !disclosed {
+		return Run{}, errors.New("explicit memory disclosure confirmation required")
+	}
 	if names == nil {
 		names = []string{}
 	}
@@ -25,6 +32,19 @@ func (e *Engine) Submit(ctx context.Context, id, principal, key, prompt string, 
 	}{1, prompt, names})
 	if err != nil {
 		return Run{}, err
+	}
+	if len(selected) > 0 {
+		payload, err = json.Marshal(struct {
+			Version     int
+			Prompt      string
+			Skills      []string
+			Memory      []session.MemorySelection
+			Disclosed   bool
+			Destination string
+		}{2, prompt, names, selected, disclosed, destination})
+		if err != nil {
+			return Run{}, err
+		}
 	}
 	digest := sha256.Sum256(payload)
 	identity := session.AdmissionIdentity{Principal: principal, Key: key, Digest: hex.EncodeToString(digest[:])}
@@ -42,7 +62,10 @@ func (e *Engine) Submit(ctx context.Context, id, principal, key, prompt string, 
 	if err != nil || found {
 		return prior, err
 	}
-	return e.startWithSkills(ctx, id, prompt, names, &identity)
+	if len(selected) > 0 && (destination == "" || destination != e.cfg.MemoryDestination.ID) {
+		return Run{}, errors.New("model destination changed or unavailable; review selection and destination again")
+	}
+	return e.startWithSkills(ctx, id, prompt, names, &identity, selected...)
 }
 
 // CreateIdempotent binds the client key to the normalized title. Callers supply

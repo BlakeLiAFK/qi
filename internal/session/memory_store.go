@@ -121,7 +121,8 @@ func (s *Store) initMemory() error {
  revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 16),
  payload TEXT NOT NULL CHECK(length(CAST(payload AS BLOB)) <= 32768),
  PRIMARY KEY(memory_id,revision)
- );`)
+ );
+ CREATE TABLE IF NOT EXISTS turn_memory (run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, payload TEXT NOT NULL, destination TEXT NOT NULL, FOREIGN KEY(run_id,session_id) REFERENCES runs(id,session_id));`)
 	return err
 }
 

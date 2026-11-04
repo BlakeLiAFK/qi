@@ -64,7 +64,7 @@ func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), erro
 			return nil, nil, err
 		}
 	}
-	engine, err := tasks.New(ctx, store, tasks.Config{Artifacts: deliverables, MaxConcurrent: c.maxConcurrent, MaxQueued: c.maxQueued, Coding: c.coding, MCP: c.mcp, Skills: c.skills, Questions: c.questions, Factory: func(_ string) (*agent.Agent, error) {
+	engine, err := tasks.New(ctx, store, tasks.Config{MemoryDestination: memoryDestination(modelConfig), Artifacts: deliverables, MaxConcurrent: c.maxConcurrent, MaxQueued: c.maxQueued, Coding: c.coding, MCP: c.mcp, Skills: c.skills, Questions: c.questions, Factory: func(_ string) (*agent.Agent, error) {
 		next, err := newModelProvider(modelConfig, c.modelStream)
 		if err != nil {
 			return nil, err

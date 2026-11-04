@@ -93,6 +93,10 @@ func (s *Store) EnsureQueueSchema(ctx context.Context) (resultErr error) {
 // AcceptQueued durably accepts a prompt and optionally consumes a question card
 // in one transaction. The caller serializes card validation under engine.mu.
 func (s *Store) AcceptQueued(ctx context.Context, id string, revision int64, history []agent.Message, sourceRun string, card json.RawMessage, maxQueued int, identities ...AdmissionIdentity) (Run, error) {
+	return s.AcceptQueuedMemory(ctx, id, revision, history, sourceRun, card, maxQueued, nil, 0, MemoryDestination{}, identities...)
+}
+
+func (s *Store) AcceptQueuedMemory(ctx context.Context, id string, revision int64, history []agent.Message, sourceRun string, card json.RawMessage, maxQueued int, selected []MemorySelection, memoryBudget int, destination MemoryDestination, identities ...AdmissionIdentity) (Run, error) {
 	if len(identities) > 1 {
 		return Run{}, errors.New("only one admission identity allowed")
 	}
@@ -138,6 +142,17 @@ func (s *Store) AcceptQueued(ctx context.Context, id string, revision int64, his
 			return Run{}, ErrIdempotencyCapacity
 		}
 	}
+	records, err := selectTurnMemory(ctx, tx, id, selected)
+	if err != nil {
+		return Run{}, err
+	}
+	memoryPayload, err := json.Marshal(records)
+	if err != nil {
+		return Run{}, err
+	}
+	if len(records) > 0 && len(memoryPayload) > memoryBudget {
+		return Run{}, errors.New("message and selected memory exceed size limit")
+	}
 	var archived bool
 	if err = tx.QueryRowContext(ctx, `SELECT archived FROM sessions WHERE id=?`, id).Scan(&archived); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -176,6 +191,18 @@ func (s *Store) AcceptQueued(ctx context.Context, id string, revision int64, his
 	}
 	if n != 1 {
 		return Run{}, ErrRunActive
+	}
+	if len(records) > 0 {
+		if destination.ID == "" {
+			return Run{}, errors.New("memory destination required")
+		}
+		destinationPayload, err := json.Marshal(destination)
+		if err != nil {
+			return Run{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO turn_memory(run_id,session_id,payload,destination) VALUES(?,?,?,?)`, run.ID, id, string(memoryPayload), string(destinationPayload)); err != nil {
+			return Run{}, err
+		}
 	}
 	if len(card) > 0 {
 		result, err = tx.ExecContext(ctx, `INSERT INTO events(session_id,run_id,type,payload,created_at) SELECT session_id,id,'card',?,? FROM runs WHERE id=? AND session_id=?`, string(card), now.Format(timestampFormat), sourceRun, id)

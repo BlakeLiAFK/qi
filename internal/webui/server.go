@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"gopi/internal/artifacts"
+	"gopi/internal/session"
 	"gopi/internal/skills"
 	"gopi/internal/tasks"
 )
@@ -221,6 +222,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respond(w, map[string]bool{"session_auth": s.cfg.PublicPreview})
+	case "/api/memory-destination":
+		s.memoryDestination(w, r)
+		return
 	case "/api/skills":
 		if r.Method != "GET" {
 			http.Error(w, "method not allowed", 405)
@@ -425,12 +429,19 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	switch parts[1] {
 	case "messages":
 		var req struct {
-			Prompt string   `json:"prompt"`
-			Skills []string `json:"skills,omitempty"`
-			Key    string   `json:"idempotency_key,omitempty"`
+			Prompt            string                    `json:"prompt"`
+			Skills            []string                  `json:"skills,omitempty"`
+			Key               string                    `json:"idempotency_key,omitempty"`
+			Memory            []session.MemorySelection `json:"memory,omitempty"`
+			MemoryDestination string                    `json:"memory_destination,omitempty"`
+			MemoryDisclosed   bool                      `json:"memory_disclosed,omitempty"`
 		}
 		if decode(w, r, &req) != nil || strings.TrimSpace(req.Prompt) == "" || len(req.Prompt) > 16000 {
 			http.Error(w, "invalid prompt (maximum 16000 bytes)", 400)
+			return
+		}
+		if len(req.Memory) > 32 || (len(req.Memory) > 0 && (!req.MemoryDisclosed || req.Key == "")) {
+			http.Error(w, "memory selection requires disclosure confirmation and idempotency key", 400)
 			return
 		}
 		if len(req.Skills) > 256 {
@@ -455,7 +466,18 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "idempotent submission unavailable", 503)
 				return
 			}
-			run, submitErr := backend.Submit(r.Context(), id, req.Key, req.Prompt, req.Skills)
+			var run tasks.Run
+			var submitErr error
+			if len(req.Memory) > 0 {
+				memoryBackend, ok := s.cfg.Backend.(MemorySubmissionBackend)
+				if !ok {
+					http.Error(w, "memory selection unavailable", 503)
+					return
+				}
+				run, submitErr = memoryBackend.SubmitWithMemory(r.Context(), id, req.Key, req.Prompt, req.Skills, req.Memory, req.MemoryDisclosed, req.MemoryDestination)
+			} else {
+				run, submitErr = backend.Submit(r.Context(), id, req.Key, req.Prompt, req.Skills)
+			}
 			if submitErr != nil {
 				http.Error(w, "submission rejected: key, task state, or capacity conflict", 409)
 				return
