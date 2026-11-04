@@ -31,7 +31,10 @@ type Session struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db   *sql.DB
+	path string
+}
 
 // Open opens a private local database. Parent directories must already exist.
 // The database uses WAL and full synchronization for durable committed writes.
@@ -52,6 +55,10 @@ func Open(path string) (*Store, error) {
 	if err = f.Close(); err != nil {
 		return nil, err
 	}
+	absolute, err = filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return nil, err
+	}
 	u := &url.URL{Scheme: "file", Path: absolute}
 	query := url.Values{}
 	for _, pragma := range []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(FULL)"} {
@@ -64,7 +71,7 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	s := &Store{db: db}
+	s := &Store{db: db, path: absolute}
 	for _, statement := range []string{
 		"PRAGMA journal_mode=WAL",
 		`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0)`,
