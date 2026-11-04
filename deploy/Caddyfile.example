@@ -1,0 +1,26 @@
+# TEMPLATE ONLY: replace placeholder after review. This does not enable service access.
+# Default ACME uses reachable public TCP 80 and/or 443, not an arbitrary HTTPS port.
+https://PREVIEW_HOST_INVALID {
+	# FAIL CLOSED: keep until independently configured edge access control and rate
+	# limiting are verified. Remove this respond ONLY during authorized activation.
+	respond "Preview not activated" 503
+
+	# Do not enable access logs containing credentials, cookies or request bodies.
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Cache-Control "no-store"
+	}
+	# DISABLED: uncomment this entire block ONLY during authorized activation,
+	# after access controls and rate limiting pass checks and the 503 is removed.
+	# reverse_proxy 127.0.0.1:8686 {
+	# # Preserve Host so the application's exact-origin checks remain effective.
+	# # Remove caller-controlled proxy identity, then assert only this proxy's data.
+	# header_up -Forwarded
+	# header_up X-Forwarded-For {remote_host}
+	# header_up X-Forwarded-Proto https
+	# header_up X-Forwarded-Host {host}
+	# flush_interval -1
+	# }
+}

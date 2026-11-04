@@ -1,0 +1,55 @@
+# TEMPLATE ONLY. Review deploy/README.md before installing.
+[Unit]
+Description=qi restricted development preview
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+DynamicUser=true
+User=qi-preview
+Group=qi-preview
+WorkingDirectory=/var/lib/qi-preview
+StateDirectory=qi-preview
+StateDirectoryMode=0700
+UMask=0077
+EnvironmentFile=/etc/qi-preview/preview.env
+ExecStartPre=/usr/bin/mkdir -p -m 0700 /var/lib/qi-preview/data
+ExecStart=/opt/qi-preview/current/qi serve -public-preview -listen 127.0.0.1:8686 -origin ${QI_PREVIEW_ORIGIN} -provider openai -db /var/lib/qi-preview/data/tasks.db -max-concurrent 2 -max-queued 8 -max-steps 10
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillMode=control-group
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RemoveIPC=true
+LimitCORE=0
+TasksMax=128
+MemoryMax=512M
+CPUQuota=100%
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
