@@ -70,6 +70,10 @@ func (s *server) events(w http.ResponseWriter, r *http.Request, id string) {
 	controller := http.NewResponseController(w)
 	defer controller.SetWriteDeadline(time.Time{})
 	write := func(data string) bool {
+		// Stop replay/heartbeat writes as soon as session revocation is observed.
+		if r.Context().Err() != nil {
+			return false
+		}
 		// Override the ordinary server write timeout for this write only. A slow
 		// client has five seconds, while idle connections can remain subscribed.
 		_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))

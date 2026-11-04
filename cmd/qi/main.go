@@ -19,7 +19,6 @@ import (
 	"gopi/internal/agent"
 	"gopi/internal/contextbudget"
 	"gopi/internal/plugins"
-	"gopi/internal/provider"
 	"gopi/internal/workers"
 )
 
@@ -82,8 +81,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 		fs.PrintDefaults()
 	}
 	prompt := fs.String("p", "", "one-shot prompt (otherwise interactive, one line per turn)")
-	model := fs.String("model", env("OPENAI_MODEL"), "model name (or OPENAI_MODEL; required)")
-	base := fs.String("base-url", env("OPENAI_BASE_URL"), "OpenAI-compatible API root (default https://api.openai.com/v1)")
+	modelFlags := registerModelFlags(fs)
 	config := fs.String("plugins", "", "trusted MCP stdio plugin JSON file; starts its commands")
 	enabled := fs.Bool("enable-workers", false, "expose coding CLI tools (can modify files and access network)")
 	yes := fs.Bool("yes-tools", false, "approve all tool calls for this session, without asking")
@@ -99,8 +97,13 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 	if fs.NArg() != 0 {
 		return errors.New("unexpected positional arguments; use -p for a prompt")
 	}
-	if strings.TrimSpace(*model) == "" {
-		return errors.New("set OPENAI_MODEL or pass -model")
+	modelConfig, err := modelFlags.resolve(fs, env)
+	if err != nil {
+		return err
+	}
+	modelProvider, err := newModelProvider(modelConfig, false)
+	if err != nil {
+		return err
 	}
 	if *max <= 0 || *timeout <= 0 {
 		return errors.New("max-steps and worker-timeout must be positive")
@@ -157,7 +160,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 	for i, t := range ts {
 		ts[i] = approvedTool{Tool: t, yes: *yes, in: scanner, out: diagnostics}
 	}
-	a := agent.Agent{Model: &contextbudget.Model{Next: &provider.OpenAI{Model: *model, BaseURL: *base, APIKey: env("OPENAI_API_KEY")}, Config: contextbudget.Config{MaxInputBytes: contextBytes}}, Tools: ts, MaxSteps: *max}
+	a := agent.Agent{Model: &contextbudget.Model{Next: modelProvider, Config: contextbudget.Config{MaxInputBytes: contextBytes}}, Tools: ts, MaxSteps: *max}
 	a.OnEvent = func(event agent.Event) {
 		if event.Type == "context_trim" {
 			fmt.Fprintf(diagnostics, "Context notice: omitted %d earlier messages from this model request (%d input bytes), including any user instructions in those turns. Full session history is unchanged.\n", event.DroppedMessages, event.InputBytes)

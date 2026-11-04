@@ -52,10 +52,11 @@ type SkillsBackend interface {
 	StartWithSkills(context.Context, string, string, []string) error
 }
 type Config struct {
-	Artifacts *artifacts.Service
-	Origin    string
-	Token     string
-	Backend   Backend
+	PublicPreview bool // HTTPS browser sessions; disables Basic and terminal attach
+	Artifacts     *artifacts.Service
+	Origin        string
+	Token         string
+	Backend       Backend
 }
 type loginWindow struct {
 	failures int
@@ -71,6 +72,7 @@ type server struct {
 	digest   [32]byte
 	mu       sync.Mutex
 	attempts map[string]loginWindow
+	sessions map[[32]byte]*browserSession
 	streams  int
 	now      func() time.Time
 }
@@ -87,13 +89,21 @@ func New(cfg Config) (http.Handler, error) {
 	if u.Scheme != "https" && !(u.Scheme == "http" && ip != nil && ip.IsLoopback()) {
 		return nil, errors.New("HTTPS is required except for literal loopback addresses")
 	}
+	if cfg.PublicPreview && len(cfg.Token) > 4096 {
+		return nil, errors.New("public preview token must not exceed 4096 bytes")
+	}
+	if cfg.PublicPreview && u.Scheme != "https" {
+		return nil, errors.New("public preview requires an HTTPS origin")
+	}
 	if len(cfg.Token) < 32 || strings.ContainsAny(cfg.Token, "\r\n") {
 		return nil, errors.New("web token must contain at least 32 characters and no newlines")
 	}
 	if cfg.Backend == nil {
 		return nil, errors.New("web backend is required")
 	}
-	return &server{cfg: cfg, host: u.Host, digest: sha256.Sum256([]byte(cfg.Token)), attempts: make(map[string]loginWindow), now: time.Now}, nil
+	digest := sha256.Sum256([]byte(cfg.Token))
+	cfg.Token = "" // retain only a digest of the high-entropy login credential
+	return &server{cfg: cfg, host: u.Host, digest: digest, attempts: make(map[string]loginWindow), sessions: make(map[[32]byte]*browserSession), now: time.Now}, nil
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -117,19 +127,68 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cross-site request denied", http.StatusForbidden)
 		return
 	}
-	authenticated, limited := s.authenticate(r)
-	if limited {
-		w.Header().Set("Retry-After", "60")
-		http.Error(w, "authentication temporarily rate limited", http.StatusTooManyRequests)
-		return
-	}
-	if !authenticated {
-		w.Header().Set("WWW-Authenticate", `Basic realm="qi", charset="UTF-8"`)
-		http.Error(w, "authentication required", http.StatusUnauthorized)
-		return
+	if s.cfg.PublicPreview {
+		if !publicTransport(r) {
+			http.Error(w, "HTTPS transport required", 403)
+			return
+		}
+		switch r.URL.Path {
+		case "/login", "/login.js":
+			if r.Method != "GET" {
+				http.Error(w, "method not allowed", 405)
+				return
+			}
+			name := "login.html"
+			contentType := "text/html; charset=utf-8"
+			if r.URL.Path == "/login.js" {
+				name = "login.js"
+				contentType = "text/javascript; charset=utf-8"
+			}
+			data, err := assets.ReadFile("assets/" + name)
+			if err != nil {
+				http.Error(w, "login unavailable", 500)
+				return
+			}
+			w.Header().Set("Content-Type", contentType)
+			w.Write(data)
+			return
+		case "/api/login":
+			s.login(w, r)
+			return
+		}
+		session := s.sessionFor(r)
+		if session == nil {
+			if r.URL.Path == "/" && r.Method == "GET" {
+				http.Redirect(w, r, "/login", http.StatusSeeOther)
+			} else {
+				http.Error(w, "authentication required", 401)
+			}
+			return
+		}
+		ctx, cancel := context.WithCancel(r.Context())
+		stop := context.AfterFunc(session.ctx, cancel)
+		defer stop()
+		defer cancel()
+		r = r.WithContext(ctx)
+	} else {
+		authenticated, limited := s.authenticate(r)
+		if limited {
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "authentication temporarily rate limited", 429)
+			return
+		}
+		if !authenticated {
+			w.Header().Set("WWW-Authenticate", `Basic realm="qi", charset="UTF-8"`)
+			http.Error(w, "authentication required", 401)
+			return
+		}
 	}
 	if r.Method != "GET" && (r.Header.Get("Origin") != s.cfg.Origin || r.Header.Get("X-Qi-Request") != "1") {
 		http.Error(w, "request verification failed", http.StatusForbidden)
+		return
+	}
+	if s.cfg.PublicPreview && r.URL.Path == "/api/logout" {
+		s.logout(w, r)
 		return
 	}
 	switch r.URL.Path {
@@ -150,6 +209,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		contentType := map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}
 		w.Header().Set("Content-Type", contentType[name])
 		w.Write(b)
+	case "/api/auth":
+		if r.Method != "GET" {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		respond(w, map[string]bool{"session_auth": s.cfg.PublicPreview})
 	case "/api/skills":
 		if r.Method != "GET" {
 			http.Error(w, "method not allowed", 405)

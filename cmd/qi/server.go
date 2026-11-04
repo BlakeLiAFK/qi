@@ -16,7 +16,6 @@ import (
 	"gopi/internal/agent"
 	"gopi/internal/artifacts"
 	"gopi/internal/contextbudget"
-	"gopi/internal/provider"
 	"gopi/internal/session"
 	"gopi/internal/skills"
 	"gopi/internal/tasks"
@@ -34,13 +33,23 @@ type daemonConfig struct {
 	artifactDir                                     string
 	questions                                       bool
 	modelStream                                     bool
+	providerName                                    string
+	maxOutputTokens                                 int
+	publicPreview                                   bool
 }
 
 // openDaemon owns one database and one engine. Coding tools require explicit
 // operator opt-in and durable task-scoped approval before dispatch.
 func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), error) {
+	if c.publicPreview && (c.coding != nil || len(c.mcp) > 0) {
+		return nil, nil, errors.New("public preview forbids coding workers and MCP tools until OS isolation is implemented")
+	}
+	modelConfig := modelSettings{name: c.providerName, model: c.model, base: c.baseURL, key: c.apiKey, maxTokens: c.maxOutputTokens}
+	if _, err := newModelProvider(modelConfig, c.modelStream); err != nil {
+		return nil, nil, err
+	}
 	// Validate auth/origin before opening a database or triggering recovery.
-	if _, err := webui.New(webui.Config{Origin: c.origin, Token: c.token, Backend: webui.EngineBackend{}}); err != nil {
+	if _, err := webui.New(webui.Config{PublicPreview: c.publicPreview, Origin: c.origin, Token: c.token, Backend: webui.EngineBackend{}}); err != nil {
 		return nil, nil, err
 	}
 	store, err := session.Open(c.database)
@@ -56,14 +65,18 @@ func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), erro
 		}
 	}
 	engine, err := tasks.New(ctx, store, tasks.Config{Artifacts: deliverables, MaxConcurrent: c.maxConcurrent, MaxQueued: c.maxQueued, Coding: c.coding, MCP: c.mcp, Skills: c.skills, Questions: c.questions, Factory: func(_ string) (*agent.Agent, error) {
-		return &agent.Agent{Model: &contextbudget.Model{Next: &provider.OpenAI{Model: c.model, BaseURL: c.baseURL, APIKey: c.apiKey, Stream: c.modelStream}, Config: contextbudget.Config{MaxInputBytes: c.contextBytes}}, MaxSteps: c.maxSteps}, nil
+		next, err := newModelProvider(modelConfig, c.modelStream)
+		if err != nil {
+			return nil, err
+		}
+		return &agent.Agent{Model: &contextbudget.Model{Next: next, Config: contextbudget.Config{MaxInputBytes: c.contextBytes}}, MaxSteps: c.maxSteps}, nil
 	}})
 	if err != nil {
 		_ = store.Close()
 		return nil, nil, err
 	}
 	closeAll := func() { engine.Close(); _ = store.Close() }
-	handler, err := webui.New(webui.Config{Origin: c.origin, Token: c.token, Backend: webui.EngineBackend{Engine: engine}, Artifacts: deliverables})
+	handler, err := webui.New(webui.Config{PublicPreview: c.publicPreview, Origin: c.origin, Token: c.token, Backend: webui.EngineBackend{Engine: engine}, Artifacts: deliverables})
 	if err != nil {
 		closeAll()
 		return nil, nil, err
@@ -92,12 +105,12 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	}
 	listen := fs.String("listen", "127.0.0.1:8686", "literal loopback listening address")
 	origin := fs.String("origin", "", "exact browser origin, no trailing slash (default http://listen address)")
+	publicPreview := fs.Bool("public-preview", false, "HTTPS browser sessions with logout; forbids workers/MCP; disables Basic auth and qi attach")
 	modelStream := fs.Bool("model-stream", false, "opt in to provisional model text updates; tool arguments remain buffered")
 	questions := fs.Bool("question-cards", false, "enable task-local question cards; answers grant no permission and do not resume runs")
 	artifactDir := fs.String("artifact-dir", "", "explicit existing deliverable root; task-scoped files only; disabled by default")
 	db := fs.String("db", "", "SQLite path (default user config directory/qi/tasks.db)")
-	model := fs.String("model", env("OPENAI_MODEL"), "model name (or OPENAI_MODEL; required)")
-	base := fs.String("base-url", env("OPENAI_BASE_URL"), "OpenAI-compatible API root")
+	modelFlags := registerModelFlags(fs)
 	max := fs.Int("max-steps", 20, "maximum model calls per task turn")
 	maxConcurrent := fs.Int("max-concurrent", 8, "maximum concurrently executing task turns")
 	maxQueued := fs.Int("max-queued", 64, "maximum accepted task turns waiting for execution")
@@ -116,8 +129,15 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	if fs.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
 	}
-	if strings.TrimSpace(*model) == "" {
-		return errors.New("set OPENAI_MODEL or pass -model")
+	if *publicPreview && (*enabled || *mcpPath != "") {
+		return errors.New("-public-preview cannot be combined with -enable-workers or -mcp-tools: OS isolation is not implemented")
+	}
+	modelConfig, err := modelFlags.resolve(fs, env)
+	if err != nil {
+		return err
+	}
+	if _, err = newModelProvider(modelConfig, *modelStream); err != nil {
+		return err
 	}
 	if *maxConcurrent <= 0 || *maxQueued <= 0 {
 		return errors.New("max-concurrent and max-queued must be positive")
@@ -169,7 +189,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 		*origin = "http://" + listener.Addr().String()
 	}
 	// Reject invalid origins before creating the default storage directory.
-	if _, err = webui.New(webui.Config{Origin: *origin, Token: token, Backend: webui.EngineBackend{}}); err != nil {
+	if _, err = webui.New(webui.Config{PublicPreview: *publicPreview, Origin: *origin, Token: token, Backend: webui.EngineBackend{}}); err != nil {
 		return err
 	}
 	if *db == "" {
@@ -183,7 +203,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 		}
 		*db = filepath.Join(dir, "tasks.db")
 	}
-	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, maxConcurrent: *maxConcurrent, maxQueued: *maxQueued, coding: coding, mcp: mcp, contextBytes: contextBytes, skills: catalog, artifactDir: *artifactDir, questions: *questions, modelStream: *modelStream})
+	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: modelConfig.model, baseURL: modelConfig.base, apiKey: modelConfig.key, providerName: modelConfig.name, maxOutputTokens: modelConfig.maxTokens, origin: *origin, token: token, maxSteps: *max, maxConcurrent: *maxConcurrent, maxQueued: *maxQueued, coding: coding, mcp: mcp, contextBytes: contextBytes, skills: catalog, artifactDir: *artifactDir, questions: *questions, modelStream: *modelStream, publicPreview: *publicPreview})
 	if err != nil {
 		return err
 	}
@@ -191,7 +211,12 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
-	fmt.Fprintf(out, "qi WebUI: %s\nSign in as qi using QI_WEB_TOKEN. Token is never printed.\nSQLite: %s\nConnect from a terminal with qi attach.\n", *origin, *db)
+	fmt.Fprintf(out, "qi WebUI: %s\nToken is never printed.\nSQLite: %s\n", *origin, *db)
+	if *publicPreview {
+		fmt.Fprintln(out, "Public preview session mode: open /login over HTTPS. Basic auth and qi attach are disabled. Restart revokes all sessions.")
+	} else {
+		fmt.Fprintln(out, "Sign in as qi using QI_WEB_TOKEN. Connect from a terminal with qi attach.")
+	}
 	if coding != nil {
 		fmt.Fprintln(out, "Coding workers enabled: every action requires approval in the WebUI. Workspace is not a sandbox.")
 	}

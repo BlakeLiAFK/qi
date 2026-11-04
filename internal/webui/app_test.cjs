@@ -189,3 +189,38 @@ test('live snapshot rejects cross-task/run data and bounds displayed content',()
  fixture.live_text.task_id='one';fixture.live_text.run_id='other-run';context.paint(fixture);assert.equal(nodes.get('conversation').children.length,0);
  fixture.live_text.run_id='run-one';fixture.live_text.text='x'.repeat(100000);context.paint(fixture);const node=nodes.get('conversation').children[0];assert.equal(node.children[1].textContent.length,65536);assert.match(node.children.at(-1).textContent,/limit reached/);
 });
+
+test('session logout controls are opt-in and send exact CSRF-protected scope',async()=>{
+ for(const all of [false,true]){
+  const {nodes,context,requests}=setup();await new Promise(setImmediate);const redirects=[];context.location={replace:path=>redirects.push(path)};
+  assert.equal(nodes.get('auth-controls').hidden,true);await nodes.get('logout').onclick();assert.equal(requests.filter(r=>r.path==='/api/logout').length,0);
+  const original=context.fetch;context.fetch=async(path,opts)=>{if(path==='/api/auth')return {ok:true,json:async()=>({session_auth:true})};if(path==='/api/logout'){requests.push({path,opts});return {ok:true,json:async()=>({authenticated:false})};}return original(path,opts);};
+  await context.loadAuth();assert.equal(nodes.get('auth-controls').hidden,false);
+  context.document.getElementById('prompt').value='Private unsent text';vm.runInContext("taskDrafts.set('A','private draft')",context);
+  await nodes.get(all?'logout-all':'logout').onclick();const sent=requests.filter(r=>r.path==='/api/logout');assert.equal(sent.length,1);assert.deepEqual(JSON.parse(sent[0].opts.body),{all});assert.equal(sent[0].opts.credentials,'same-origin');assert.equal(sent[0].opts.headers['X-Qi-Request'],'1');assert.equal(sent[0].opts.headers['Content-Type'],'application/json');
+  assert.deepEqual(redirects,['/login']);assert.equal(context.document.getElementById('prompt').value,'');assert.equal(vm.runInContext('taskDrafts.size',context),0);assert.equal(nodes.get('conversation').children.length,0);
+ }
+});
+test('logout failure is not retried and does not pretend successful sign-out',async()=>{
+ const {nodes,context,requests}=setup();await new Promise(setImmediate);const redirects=[];context.location={replace:path=>redirects.push(path)};vm.runInContext('sessionAuth=true',context);
+ context.document.getElementById('prompt').value='Keep my draft';context.fetch=async(path,opts)=>{requests.push({path,opts});return {ok:false,status:503,text:async()=> 'Try again later'};};
+ await nodes.get('logout-all').onclick();assert.equal(requests.filter(r=>r.path==='/api/logout').length,1);assert.deepEqual(redirects,[]);assert.equal(context.document.getElementById('prompt').value,'Keep my draft');assert.equal(nodes.get('logout').disabled,false);assert.equal(nodes.get('error').hidden,false);
+});
+test('expired session redirects only known session auth, never fabricates Basic logout',async()=>{
+ for(const sessionMode of [false,true]){const {context}=setup();await new Promise(setImmediate);const redirects=[];context.location={replace:path=>redirects.push(path)};vm.runInContext('sessionAuth='+sessionMode,context);context.fetch=async()=>({ok:false,status:401,text:async()=> 'authentication required'});await assert.rejects(context.api('/api/tasks'));assert.deepEqual(redirects,sessionMode?['/login']:[]);}
+});
+test('late response cannot repopulate protected content after logout',async()=>{
+ const {context,nodes}=setup();await new Promise(setImmediate);let resolve;context.fetch=async()=>({ok:true,json:()=>new Promise(r=>{resolve=r;})});const pending=context.api('/api/tasks');await new Promise(setImmediate);context.finishSignOut();resolve([{id:'private',title:'Private task'}]);await assert.rejects(pending,/Signed out/);assert.equal(nodes.get('tasks').children.length,0);
+});
+
+test('logout clears question/composer/submission drafts and cached task snapshot',async()=>{
+ const {context,nodes,fixture}=setup();await new Promise(setImmediate);
+ const question={id:'q-secret',revision:2,kind:'question',input_type:'text',title:'Private question',summary:'Sensitive answer',state:'pending',expires_at:new Date(Date.now()+60000).toISOString()};
+ const panel=context.document.getElementById('conversation');context.paintQuestion(fixture,question,panel);
+ const block=panel.children.at(-1);const label=block.children.find(n=>n.tag==='label');const input=label.children[0];input.value='Private draft answer';input.oninput();
+ vm.runInContext("taskDrafts.set('one','private composer');pendingSubmissions.set('one',{signature:'private request',key:'id'});version='private snapshot'",context);
+ assert.equal(vm.runInContext('questionDrafts.size',context),1);context.finishSignOut();
+ for(const name of ['questionDrafts','taskDrafts','pendingSubmissions'])assert.equal(vm.runInContext(name+'.size',context),0,name);
+ assert.equal(vm.runInContext('version',context),'');assert.equal(nodes.get('conversation').children.length,0);assert.equal(nodes.get('skills').children.length,0);
+ input.value='Late detached input';input.oninput();assert.equal(vm.runInContext('questionDrafts.size',context),0,'late input cannot restore secret draft');
+});

@@ -1,12 +1,13 @@
 # qi
 
-A small Go assistant with a persistent task WebUI and an OpenAI-compatible model/tool loop,
+A small Go assistant with a persistent task WebUI and OpenAI-compatible or native Anthropic model/tool loops,
 explicitly configured MCP stdio plugins, and optional Codex/Claude coding workers.
 This is an early implementation, not feature parity with Pi or a production sandbox.
 
 ## Run
 
-Requires Go 1.22+ and access to an OpenAI-compatible Chat Completions API.
+Requires Go 1.22+ and access to an OpenAI-compatible Chat Completions API or
+the native Anthropic Messages API.
 
 ```sh
 go build -o qi ./cmd/qi
@@ -25,6 +26,50 @@ Automatic retries, context compaction, scheduling, and a TUI are not implemented
 `-model` and `-base-url` override their environment variables. The API key may be
 omitted for compatible local servers. The model name must be explicitly supplied.
 Run `./qi -h` for flags. Diagnostics and permission prompts use stderr; answers use stdout.
+
+## Model providers
+
+`-provider openai` is the default and preserves `OPENAI_MODEL`, `OPENAI_API_KEY`,
+and `OPENAI_BASE_URL`. It uses the OpenAI-compatible Chat Completions protocol,
+with official API root `https://api.openai.com/v1` when no base URL is configured.
+
+For the native Anthropic Messages API:
+
+```sh
+export ANTHROPIC_MODEL='your-anthropic-model'
+export ANTHROPIC_API_KEY='your-key'
+./qi -provider anthropic -p 'Explain this project'
+# Or use the same provider for persistent WebUI tasks:
+./qi serve -provider anthropic
+```
+
+Set `QI_WEB_TOKEN` as described below before starting the server. The Anthropic
+provider uses only `ANTHROPIC_MODEL`, `ANTHROPIC_API_KEY`, and
+`ANTHROPIC_BASE_URL`; it never falls back to OpenAI model names, endpoints, or keys.
+Its official default root is `https://api.anthropic.com/v1`. Both providers accept
+`-model` and `-base-url` overrides. API keys are environment-only, with no key flag;
+an absent key is permitted for local fixtures. Base URLs are API roots, not the
+`/messages` or `/chat/completions` endpoint itself. No environment file is loaded
+automatically. Provider choice belongs to the standalone process or daemon;
+`qi attach` uses the daemon’s provider.
+
+Anthropic requires an output-token cap. qi defaults it to **4096 tokens**;
+`ANTHROPIC_MAX_TOKENS` sets a positive integer default, and
+`-max-output-tokens 8192` overrides it. That option is rejected with the OpenAI
+adapter rather than silently ignored. Model-specific output/context limits still
+apply. This output-token setting is separate from `QI_MAX_CONTEXT_BYTES`, which
+bounds serialized input bytes rather than tokens.
+
+Native Anthropic supports buffered text and client tool calls/results. Native
+streaming is not implemented: `qi serve -provider anthropic -model-stream` fails
+before opening the server or issuing a model request. Unsupported content blocks
+and stop modes fail closed rather than being silently discarded. Native thinking
+blocks, server-side tools, mid-conversation system messages, and text appearing
+after a tool-use block are not supported. The adapter pins the stable
+`anthropic-version: 2023-06-01` header. This native API
+transport is separate from the optional `claude` coding subprocess and its
+`QI_CLAUDE_API_KEY` credential. Tests use local HTTP fixtures only; no live Anthropic
+requests or paid calls were made to validate this implementation.
 
 ## Persistent task WebUI
 
@@ -71,11 +116,31 @@ that bucket. Configure additional rate limiting at the proxy edge.
 
 `qi serve -h` lists server options. Ctrl-C or SIGTERM shuts down the server and
 cancels active and queued runs. The UI uses SSE progress notifications and snapshot
-polling. Opt in with `qi serve -model-stream` for provisional model text updates;
+polling. With the OpenAI-compatible provider, opt in using `qi serve -model-stream`
+for provisional model text updates;
 this remains off by default. Live previews are bounded, task/run scoped, and may
 pause at size or event limits. A completed message replaces its preview. Partial
 tool arguments are never rendered or executed. Interrupted preview text is not
 a completed answer and is not replayed into model history.
+
+## Restricted public-preview mode
+
+`qi serve -public-preview -origin https://your-private-host` enables the separate
+HTTPS browser-session login/logout mode. Configure the trusted TLS reverse proxy
+and access controls described in the deployment/security documentation before
+exposing it. Basic authentication and `qi attach` are disabled in this mode.
+
+**Public-preview mode rejects `-enable-workers` and `-mcp-tools` at startup.**
+The check occurs before configuration files, executable paths, listeners, or the
+database are used. The daemon constructor also enforces the restriction. Explicit
+per-call approval and environment filtering do not replace real OS isolation;
+there is no flag to override this restriction while the isolated backend remains
+unimplemented. Standalone/local development opt-ins are unchanged.
+
+Authenticated question cards and explicit-root deliverables may still be enabled
+with `-question-cards` and `-artifact-dir`. They retain their normal permission,
+storage-isolation, and non-execution boundaries. Authentication is still required
+for all protected task content and deliverables.
 
 ## Task question cards
 
@@ -110,6 +175,10 @@ and the SQLite database. Nothing is exposed by default. Files must already exist
 under `<artifact-dir>/<task-id>/<relative-path>`. The directory and all opened
 path components must not be symlinks. Only regular files up to 32 MiB are allowed;
 dotfile segments, absolute paths, traversal, and backslash paths are rejected.
+Each task allows at most 100 registered versions; registering the same task/path/hash
+again returns the existing record. Exceeding the quota returns HTTP 409. Reads/hashes
+and active registration/download responses are each capped at four concurrently;
+a saturated web transfer limit returns HTTP 429 for a later retry.
 
 Explicit registration is available through the authenticated API:
 `POST /api/tasks/<task-id>/artifacts` with JSON `{"path":"report.pdf"}`.
@@ -291,7 +360,8 @@ descriptions, schemas, or tool arguments: configuration and approvals are durabl
 and model-visible where applicable. No hosted/OAuth/credential-bearing MCP setup
 is supported in this daemon mode. Same-UID filesystem, process, and network access
 remain possible, so this is **not a sandbox** and is unsafe for untrusted plugins
-or a public tool-enabled preview without actual isolation. MCP remains off unless
+or any public tool-enabled deployment without actual isolation. The explicit
+`-public-preview` mode rejects `-mcp-tools`. MCP remains off unless
 `-mcp-tools` is explicitly supplied. Cancellation/recovery cannot roll back external
 changes or guarantee exactly-once effects. Tests use fixtures, not live services.
 
@@ -375,8 +445,9 @@ copied into the ephemeral home. No live paid calls were made to test this mappin
 
 Environment filtering is **not hostile-code isolation**. Workers still run as the
 same OS user and may be able to read daemon credentials, inspect processes, access
-SQLite state, or modify other files. A worker-enabled public preview is unsafe
-without actual process/user/container isolation and access controls. These are
+SQLite state, or modify other files. Public-preview mode rejects worker enablement entirely. Other worker-enabled
+public deployments are unsafe without actual process/user/container isolation
+and access controls. These are
 not automatically configured by qi. Jobs for one canonical workspace are serialized
 within one qi process only; separate daemon instances are not coordinated.
 
@@ -445,7 +516,7 @@ WebUI, and worker lifecycle behavior.
 
 ### Model transport security
 
-Remote `OPENAI_BASE_URL` endpoints must use HTTPS. Plain HTTP is permitted only
+Remote `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL` endpoints must use HTTPS. Plain HTTP is permitted only
 when the configured hostname is a literal loopback IP, such as `127.0.0.1` or
 `[::1]`, for a local model server. `localhost`, DNS aliases, and other hostnames
 do not qualify. URL credentials, query strings, and fragments are rejected.

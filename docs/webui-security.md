@@ -5,7 +5,64 @@ execution sandbox. Anyone possessing its password can read every task, submit
 messages, cancel runs and act on the available cards. Keep the model API key
 separate from the Web UI password. Do not expose real credentials in demos.
 
-## Authentication and transport
+## Optional public preview browser sessions
+
+`qi serve -public-preview -origin https://qi.example` enables a distinct browser-session
+mode. It is opt-in; the default remains the local Basic mode described below. Set
+`QI_WEB_TOKEN` in the process environment to a freshly generated high-entropy
+credential (at least 32 characters). This is a reusable login bearer secret, not a one-time bootstrap token or a
+human password. Never use a guessable password or commit an environment file.
+Only a SHA-256 digest is retained by the web handler. The environment remains
+part of the trusted host and must not be exposed to untrusted processes.
+
+- `/login`, `/login.js`, and POST `/api/login` are the only public login routes.
+  No task, artifact, event, app asset, or diagnostic API becomes anonymous.
+- POST `/api/login` accepts JSON `{token: ...}` and requires exact Origin plus
+  `X-Qi-Request: 1`. Basic authentication is disabled, including for `qi attach`.
+- Successful login sets a random 256-bit `__Host-qi-session` cookie with Secure,
+  HttpOnly, SameSite=Strict, Path=/ and no Domain. Only its digest is stored
+  server-side. The browser never stores the login credential in localStorage.
+- Sessions expire absolutely after eight hours, with at most 64 live records.
+  Login rotates an existing session. POST `/api/logout` with JSON `{all:false}`
+  revokes the current session; `{all:true}` revokes all sessions. Both require
+  the authenticated session, exact Origin and the custom request header. Logout
+  cancels existing event-stream contexts; reconnects must authenticate again.
+  Expiry also cancels streams. Restart revokes every session. Logout-all does
+  not revoke the reusable login credential: someone holding it can sign in again.
+  To revoke that credential, replace QI_WEB_TOKEN and restart qi. Revocation does
+  not undo already accepted actions or cancel background task execution.
+- Authentication failures use the bounded TCP-peer limiter described below.
+  Only login guesses consume its budget in preview mode; missing/expired cookies
+  do not. Existing valid sessions remain usable during a proxy-shared login
+  lockout. Caddy is still a shared peer: deploy independent edge protections
+  if per-client throttling is needed. No client-IP forwarding header is trusted.
+- HTTPS origin is mandatory. Every request must arrive over TLS or from a
+  literal loopback TCP peer with exactly `X-Forwarded-Proto: https`. This selects
+  a trusted local proxy boundary; it does not make arbitrary proxies trusted.
+  Caddy must preserve Host, overwrite X-Forwarded-Proto, terminate TLS, redirect
+  HTTP before the app, and keep the qi upstream inaccessible off-host. Local
+  processes can impersonate the proxy, so use an isolated OS account/container.
+  Never log request bodies, cookies, or Authorization headers. Standard Caddy
+  has no built-in per-client login rate limiter; do not assume one is installed.
+
+Example proxy shape (placeholder hostname; configuration only, not deployed):
+
+```caddyfile
+qi.example {
+    reverse_proxy 127.0.0.1:8686 {
+        header_up Host qi.example
+        header_up X-Forwarded-Proto https
+    }
+}
+```
+
+Before exposure, independently verify DNS/TLS, HTTPS redirect, upstream firewall,
+external host/origin rejection, cookie behavior and sign-out/stream termination.
+Keep workers and credentialed MCP off for an unreviewed preview. This remains a
+single-owner application, not an account system or a multi-user authorization
+boundary. No deployment or public availability is implied by these local tests.
+
+## Default Basic authentication and transport
 
 - Use a cryptographically random password with at least 32 characters. The server
   requires HTTP Basic username `qi` and this password for **every** route, including
@@ -60,7 +117,14 @@ approval boundary. A confirmation card cannot grant general tool privileges.
 
 ## Current scope
 
-The UI polls task state; token streaming is not implemented. Switching task tabs
+The UI refreshes authoritative task snapshots on SSE progress notifications and
+periodic polling. `qi serve -model-stream` optionally enables bounded provisional
+model text; the default remains buffered. Preview snapshots are task/run scoped,
+limited to 64 KiB, rendered as text, and cleared on a final message, error or
+terminal run. Reconnection replaces snapshots rather than appending repeated
+deltas. Partial tool arguments are never shown or dispatched. Persisted delta
+events are progress records, not conversation history; they are never replayed
+as execution after restart. Switching task tabs
 does not cancel other runs. Concurrent task execution and durable history are
 owned by the task engine. The interface does not itself constrain a model,
 plugin, worker process, filesystem access or network access. The optional coding

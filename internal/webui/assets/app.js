@@ -1,6 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id);
 let skillControls=[];
+let sessionAuth=false, signingOut=false, loggedOut=false;
 // Unsent drafts stay in memory and are keyed by the task they belong to.
 const taskDrafts=new Map();
 let selected=null, busy=false, version='', refreshRunning=false, refreshAgain=false;
@@ -15,12 +16,21 @@ function watchTask(id){
  stream.addEventListener('progress',event=>{try{const data=JSON.parse(event.data);if(data.task_id===id)changed();}catch(_){}});
  // EventSource reconnects using Last-Event-ID. Polling remains a fallback.
 }
-function error(e){$('error').textContent=e.message||String(e);$('error').hidden=false;}
-async function api(path,body){const response=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json','X-Qi-Request':'1'},body:body===undefined?undefined:JSON.stringify(body)});if(!response.ok)throw new Error((await response.text()).trim()||'Request failed');return response.json();}
+function error(e){if(loggedOut)return;$('error').textContent=e.message||String(e);$('error').hidden=false;}
+async function api(path,body){
+ if(loggedOut)throw new Error('Signed out');
+ const response=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json','X-Qi-Request':'1'},body:body===undefined?undefined:JSON.stringify(body)});
+ if(loggedOut)throw new Error('Signed out');
+ if(response.status===401&&sessionAuth){finishSignOut();throw new Error('Session ended. Sign in again.');}
+ if(!response.ok)throw new Error((await response.text()).trim()||'Request failed');
+ const result=await response.json();
+ if(loggedOut)throw new Error('Signed out');
+ return result;
+}
 function element(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function active(status){return ['running','queued','waiting_for_approval','waiting_for_input'].includes(status);}
-function paint(task){const signature=JSON.stringify(task)+JSON.stringify((task.approvals||[]).map(a=>Date.parse(a.expires_at)<=Date.now()))+JSON.stringify((task.cards||[]).map(c=>Date.parse(c.expires_at)<=Date.now()));$('send').disabled=busy||active(task.status);if(version===signature)return;version=signature;$('task-title').textContent=task.title;$('status').textContent=task.status;$('cancel').hidden=!active(task.status);$('send').disabled=busy||active(task.status);const panel=$('conversation');const nearBottom=panel.scrollHeight-panel.scrollTop-panel.clientHeight<100;panel.replaceChildren();paintContextNotice(task,panel);for(const msg of task.messages||[]){if(!['user','assistant','tool'].includes(msg.role))continue;const block=element('div',undefined,'message '+msg.role);block.append(element('small',msg.role==='assistant'?'QI':msg.role.toUpperCase()),element('div',msg.content||''));panel.append(block);}paintLiveText(task,panel);for(const run of task.runs||[]){if(run.error){const notice=element('section',undefined,'card');notice.append(element('h3','Run '+run.status),element('p',run.error));panel.append(notice);}}for(const card of task.cards||[]){if(card.kind==='question'){paintQuestion(task,card,panel);continue;}const block=element('section',undefined,'card');block.append(element('h3',card.title),element('p',card.summary),element('small',card.state));for(const action of card.actions||[]){const button=element('button',action.label);button.disabled=card.state!=='pending';button.onclick=async()=>{button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/actions',{card_id:card.id,action:action.id,revision:card.revision});await refresh();}catch(e){error(e);await refresh();}};block.append(button);}panel.append(block);}paintApprovals(task,panel);paintArtifacts(task,panel);if(nearBottom)panel.scrollTop=panel.scrollHeight;}
-async function refresh(){if(refreshRunning){refreshAgain=true;return;}refreshRunning=true;watchTask(selected);try{const tasks=await api('/api/tasks');const nav=$('tasks');nav.replaceChildren();for(const task of tasks){const button=element('button',task.title,task.id===selected?'active':'');button.append(element('small',task.status));button.onclick=()=>{if(busy)return;selectTask(task);refresh();};nav.append(button);}if(selected){const id=selected;const task=await api('/api/tasks/'+encodeURIComponent(id));task.approvals=await api('/api/tasks/'+encodeURIComponent(id)+'/approvals');task.artifacts=await api('/api/tasks/'+encodeURIComponent(id)+'/artifacts');if(selected===id)paint(task);}}catch(e){error(e);}finally{refreshRunning=false;if(refreshAgain){refreshAgain=false;refresh();}}}
+function paint(task){if(loggedOut)return;const signature=JSON.stringify(task)+JSON.stringify((task.approvals||[]).map(a=>Date.parse(a.expires_at)<=Date.now()))+JSON.stringify((task.cards||[]).map(c=>Date.parse(c.expires_at)<=Date.now()));$('send').disabled=busy||active(task.status);if(version===signature)return;version=signature;$('task-title').textContent=task.title;$('status').textContent=task.status;$('cancel').hidden=!active(task.status);$('send').disabled=busy||active(task.status);const panel=$('conversation');const nearBottom=panel.scrollHeight-panel.scrollTop-panel.clientHeight<100;panel.replaceChildren();paintContextNotice(task,panel);for(const msg of task.messages||[]){if(!['user','assistant','tool'].includes(msg.role))continue;const block=element('div',undefined,'message '+msg.role);block.append(element('small',msg.role==='assistant'?'QI':msg.role.toUpperCase()),element('div',msg.content||''));panel.append(block);}paintLiveText(task,panel);for(const run of task.runs||[]){if(run.error){const notice=element('section',undefined,'card');notice.append(element('h3','Run '+run.status),element('p',run.error));panel.append(notice);}}for(const card of task.cards||[]){if(card.kind==='question'){paintQuestion(task,card,panel);continue;}const block=element('section',undefined,'card');block.append(element('h3',card.title),element('p',card.summary),element('small',card.state));for(const action of card.actions||[]){const button=element('button',action.label);button.disabled=card.state!=='pending';button.onclick=async()=>{button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/actions',{card_id:card.id,action:action.id,revision:card.revision});await refresh();}catch(e){error(e);await refresh();}};block.append(button);}panel.append(block);}paintApprovals(task,panel);paintArtifacts(task,panel);if(nearBottom)panel.scrollTop=panel.scrollHeight;}
+async function refresh(){if(loggedOut||signingOut)return;if(refreshRunning){refreshAgain=true;return;}refreshRunning=true;watchTask(selected);try{const tasks=await api('/api/tasks');const nav=$('tasks');nav.replaceChildren();for(const task of tasks){const button=element('button',task.title,task.id===selected?'active':'');button.append(element('small',task.status));button.onclick=()=>{if(busy)return;selectTask(task);refresh();};nav.append(button);}if(selected){const id=selected;const task=await api('/api/tasks/'+encodeURIComponent(id));task.approvals=await api('/api/tasks/'+encodeURIComponent(id)+'/approvals');task.artifacts=await api('/api/tasks/'+encodeURIComponent(id)+'/artifacts');if(selected===id)paint(task);}}catch(e){error(e);}finally{refreshRunning=false;if(refreshAgain){refreshAgain=false;refresh();}}}
 function selectTask(task){
  const nextID=task?task.id:null;
  if(task&&nextID===selected)return;
@@ -70,7 +80,7 @@ $('composer').onsubmit=async event=>{
  finally{busy=false;$('prompt').readOnly=false;$('skills').disabled=false;await refresh();}
 };
 $('cancel').onclick=async()=>{const id=selected;if(!id)return;$('cancel').disabled=true;try{await api('/api/tasks/'+encodeURIComponent(id)+'/cancel',{});await refresh();}catch(e){error(e);}finally{$('cancel').disabled=false;}};
-loadSkills();refresh();setInterval(()=>{if(!document.hidden)refresh();},1500);
+loadAuth().finally(()=>{if(!loggedOut){loadSkills();refresh();}});setInterval(()=>{if(!document.hidden)refresh();},1500);
 
 // These durable exact-action decisions are NOT informational task cards.
 function paintApprovals(task,panel){
@@ -144,7 +154,7 @@ function paintQuestion(task,card,panel){
  if(card.input_type==='choice'){
   for(const choice of card.choices||[]){const button=element('button',choice.label);button.disabled=!pending;button.onclick=()=>submit({choice_id:choice.id});controls.push(button);block.append(button);}
  }else if(card.input_type==='text'){
-  block.append(element('p','不要输入密码或 API Key，回答会保存并可能发给模型'));const label=element('label','Your answer');const input=element('textarea');input.maxLength=8000;input.value=questionDrafts.get(key)||'';input.disabled=!pending;input.oninput=()=>questionDrafts.set(key,input.value);label.append(input);
+  block.append(element('p','不要输入密码或 API Key，回答会保存并可能发给模型'));const label=element('label','Your answer');const input=element('textarea');input.maxLength=8000;input.value=questionDrafts.get(key)||'';input.disabled=!pending;input.oninput=()=>{if(!loggedOut)questionDrafts.set(key,input.value);};label.append(input);
   const button=element('button','Save answer');button.disabled=!pending;button.onclick=()=>{const text=input.value.trim();if(new TextEncoder().encode(text).length>8000){error(new Error('Answer is too long. Please use at most 8,000 UTF-8 bytes.'));return;}if(text)return submit({text});};controls.push(input,button);block.append(label,button);
  }
  if(!pending)block.append(element('small','This question is closed or expired.'));
@@ -167,3 +177,22 @@ function paintLiveText(task,panel){
  if(live.truncated||live.text.length>65536)block.append(element('small','Live preview limit reached. The completed message will replace this preview.'));
  panel.append(block);
 }
+
+async function loadAuth(){
+ try{const auth=await api('/api/auth');sessionAuth=auth.session_auth===true;$('auth-controls').hidden=!sessionAuth;}
+ catch(e){$('auth-controls').hidden=true;error(e);}
+}
+function finishSignOut(){
+ if(loggedOut)return;loggedOut=true;watchTask(null);selected=null;taskDrafts.clear();questionDrafts.clear();pendingSubmissions.clear();version='';
+ try{const keys=[];for(let i=0;i<sessionStorage.length;i++){const key=sessionStorage.key(i);if(key&&key.startsWith('qi-submission:'))keys.push(key);}for(const key of keys)sessionStorage.removeItem(key);}catch(_){}
+ clearSkills();skillControls=[];$('skills').replaceChildren();$('skill-picker').hidden=true;$('prompt').value='';$('prompt').readOnly=true;$('send').disabled=true;$('cancel').hidden=true;$('conversation').replaceChildren();$('tasks').replaceChildren();$('task-title').textContent='Signed out';$('status').textContent='';$('error').hidden=true;$('auth-controls').hidden=true;
+ if(typeof location!=='undefined')location.replace('/login');
+}
+async function signOut(all){
+ if(!sessionAuth||signingOut||loggedOut)return;signingOut=true;$('logout').disabled=true;$('logout-all').disabled=true;
+ try{const result=await api('/api/logout',{all});if(result.authenticated!==false)throw new Error('Sign out was not confirmed');finishSignOut();}
+ catch(e){error(e);}
+ finally{signingOut=false;if(!loggedOut){$('logout').disabled=false;$('logout-all').disabled=false;}}
+}
+$('logout').onclick=()=>signOut(false);
+$('logout-all').onclick=()=>signOut(true);
