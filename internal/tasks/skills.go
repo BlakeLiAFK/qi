@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"gopi/internal/session"
 	"gopi/internal/skills"
 )
 
@@ -24,8 +25,11 @@ func (e *Engine) AvailableSkills() []skills.Metadata {
 // not injected into system policy or shared agent configuration. Prior snapshots
 // remain ordinary same-task history. Selection never grants execution approval.
 func (e *Engine) StartWithSkills(ctx context.Context, id, prompt string, names []string) (Run, error) {
+	return e.startWithSkills(ctx, id, prompt, names, nil)
+}
+func (e *Engine) startWithSkills(ctx context.Context, id, prompt string, names []string, identity *session.AdmissionIdentity) (Run, error) {
 	if len(names) == 0 {
-		return e.Start(ctx, id, prompt)
+		return e.start(ctx, id, prompt, identity)
 	}
 	if e.cfg.Skills == nil {
 		return Run{}, errors.New("skills are not configured")
@@ -65,5 +69,5 @@ func (e *Engine) StartWithSkills(ctx context.Context, id, prompt string, names [
 	if len(label) > e.cfg.MaxPromptBytes-len(prompt) || len(data) > e.cfg.MaxPromptBytes-len(prompt)-len(label) {
 		return Run{}, errors.New("message and selected skills exceed size limit")
 	}
-	return e.Start(ctx, id, prompt+label+string(data))
+	return e.start(ctx, id, prompt+label+string(data), identity)
 }

@@ -42,6 +42,7 @@ func (s *Store) initTasks() error {
 		`CREATE INDEX IF NOT EXISTS latest_run_by_session ON runs(session_id,started_at DESC,id DESC)`,
 		`CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), run_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(run_id,session_id) REFERENCES runs(id,session_id))`,
 		`CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id,id)`,
+		`CREATE INDEX IF NOT EXISTS events_by_session_type_run ON events(session_id,type,run_id,id)`,
 	} {
 		if _, err := s.db.Exec(query); err != nil {
 			return err

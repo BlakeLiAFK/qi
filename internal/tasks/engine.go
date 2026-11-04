@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gopi/internal/agent"
+	"gopi/internal/artifacts"
 	"gopi/internal/session"
 	"gopi/internal/skills"
 )
@@ -57,6 +58,7 @@ type ContextNotice struct {
 	InputBytes      int    `json:"input_bytes"`
 }
 type Task struct {
+ LiveText *LiveText `json:"live_text,omitempty"`
 	ContextNotice *ContextNotice  `json:"context_notice,omitempty"`
 	ID            string          `json:"id"`
 	Title         string          `json:"title"`
@@ -68,6 +70,7 @@ type Task struct {
 	Cards         []Card          `json:"cards"`
 }
 type Config struct {
+	Artifacts      *artifacts.Service
 	Questions      bool
 	Skills         *skills.Catalog
 	MCP            []MCPServer
@@ -234,7 +237,8 @@ func (e *Engine) Get(ctx context.Context, id string) (Task, error) {
 			t.Cards = append(t.Cards, c)
 		}
 	}
-	return t, nil
+	t.LiveText = projectLiveText(id,events,runs)
+ return t, nil
 }
 func (e *Engine) Events(ctx context.Context, id string, after int64) ([]Event, error) {
 	return e.store.Events(ctx, id, after)
@@ -243,6 +247,9 @@ func (e *Engine) Events(ctx context.Context, id string, after int64) ([]Event, e
 // Start starts one turn independent of the requesting HTTP connection lifetime.
 // Cancellation is explicit through Cancel or Close. Other tasks run concurrently.
 func (e *Engine) Start(ctx context.Context, id, prompt string) (Run, error) {
+	return e.start(ctx, id, prompt, nil)
+}
+func (e *Engine) start(ctx context.Context, id, prompt string, identity *session.AdmissionIdentity) (Run, error) {
 	if len(prompt) > e.cfg.MaxPromptBytes {
 		return Run{}, errors.New("message exceeds size limit")
 	}
@@ -253,6 +260,11 @@ func (e *Engine) Start(ctx context.Context, id, prompt string) (Run, error) {
 	defer e.mu.Unlock()
 	if e.closed {
 		return Run{}, ErrClosed
+	}
+	if identity != nil {
+		if prior, found, err := e.store.LookupAdmission(ctx, id, *identity); err != nil || found {
+			return prior, err
+		}
 	}
 	if _, ok := e.active[id]; ok {
 		return Run{}, ErrBusy
@@ -268,7 +280,11 @@ func (e *Engine) Start(ctx context.Context, id, prompt string) (Run, error) {
 	if len(history) > e.cfg.MaxMessages {
 		return Run{}, errors.New("task history capacity reached; create a new task")
 	}
-	run, err := e.store.AcceptQueued(ctx, id, s.Revision, history, "", nil, e.cfg.MaxQueued)
+	identities := []session.AdmissionIdentity{}
+	if identity != nil {
+		identities = append(identities, *identity)
+	}
+	run, err := e.store.AcceptQueued(ctx, id, s.Revision, history, "", nil, e.cfg.MaxQueued, identities...)
 	if errors.Is(err, session.ErrRunActive) {
 		return Run{}, ErrBusy
 	}
@@ -326,6 +342,9 @@ func (e *Engine) execute(ctx context.Context, id string, run Run, runner *agent.
 	copyRunner := *runner
 	if e.cfg.Questions {
 		copyRunner.Tools = append(append([]agent.Tool(nil), runner.Tools...), questionTool{engine: e, taskID: id, runID: run.ID}, questionAnswersTool{engine: e, taskID: id})
+	}
+	if e.cfg.Artifacts != nil {
+		copyRunner.Tools = append(append([]agent.Tool(nil), copyRunner.Tools...), artifactPublishTool{engine: e, taskID: id, runID: run.ID})
 	}
 	if e.cfg.Coding != nil {
 		copyRunner.Tools = append(append([]agent.Tool(nil), copyRunner.Tools...), codingTool{engine: e, taskID: id, runID: run.ID, config: e.cfg.Coding})

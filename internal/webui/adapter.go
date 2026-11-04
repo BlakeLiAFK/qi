@@ -40,3 +40,9 @@ func (b EngineBackend) StartWithSkills(ctx context.Context, id, prompt string, n
 	_, err := b.Engine.StartWithSkills(ctx, id, prompt, names)
 	return err
 }
+
+// The web server is explicitly single-user. Authentication tokens may rotate;
+// the durable principal names the owner, not a transient bearer credential.
+func (b EngineBackend) Submit(ctx context.Context, id, key, prompt string, names []string) (tasks.Run, error) {
+	return b.Engine.Submit(ctx, id, "local-owner", key, prompt, names)
+}

@@ -8,7 +8,7 @@ function setup(taskList=[]){
  const nodes=new Map(),requests=[];
  const fixture={id:'one',title:'Test',status:'idle',messages:[],cards:[{id:'card-one',revision:4,title:'Choose',summary:'Review',state:'pending',actions:[{id:'approve',label:'Approve'}]}]};
  const document={getElementById(id){if(!nodes.has(id))nodes.set(id,new Node('div'));return nodes.get(id);},createElement(tag){return new Node(tag);},hidden:false};
- const context=vm.createContext({TextEncoder,document,setInterval(){},fetch:async(path,opts)=>{requests.push({path,opts});return {ok:true,json:async()=>path==='/api/tasks'?taskList:path==='/api/skills'||((path.endsWith('/approvals')||path.endsWith('/artifacts'))&&opts.method==='GET')?[]:{...fixture,...(taskList.find(task=>path==='/api/tasks/'+task.id)||{})}};}});
+ const context=vm.createContext({crypto:require("node:crypto").webcrypto,TextEncoder,document,setInterval(){},fetch:async(path,opts)=>{requests.push({path,opts});return {ok:true,json:async()=>path==='/api/tasks'?taskList:path==='/api/skills'||((path.endsWith('/approvals')||path.endsWith('/artifacts'))&&opts.method==='GET')?[]:{...fixture,...(taskList.find(task=>path==='/api/tasks/'+task.id)||{})}};}});
  vm.runInContext(fs.readFileSync(__dirname+'/assets/app.js','utf8'),context);
  return {nodes,context,fixture,requests};
 }
@@ -156,4 +156,36 @@ test('cancelled and historical question continuations are disabled',()=>{
  const {nodes,context,fixture}=setup();fixture.status='cancelled';fixture.cards=[{id:'q',task_id:'one',run_id:'old',kind:'question',revision:2,title:'Input',state:'answered',answer:{text:'saved'}}];context.paint(fixture);
  assert.equal(nodes.get('conversation').children[0].children.find(c=>c.tag==='button').disabled,true);
  fixture.status='completed';fixture.runs=[{id:'new'}];context.paint(fixture);assert.equal(nodes.get('conversation').children[0].children.find(c=>c.tag==='button').disabled,true);
+});
+
+test('uncertain submissions reuse keys while changed requests and known acceptance get fresh keys',()=>{
+ const {context}=setup();
+ const a=context.submissionKey('one','hello',[]);
+ assert.equal(context.submissionKey('one','hello',[]),a);
+ assert.notEqual(context.submissionKey('two','hello',[]),a);
+ const b=context.submissionKey('one','hello',['review']);assert.notEqual(a,b);
+ context.clearSubmission('one');assert.notEqual(context.submissionKey('one','hello',['review']),b);
+});
+test('submission identity survives page reload when session storage is available',()=>{
+ const storage=new Map(),sessionStorage={getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
+ const first=setup();first.context.sessionStorage=sessionStorage;
+ const key=first.context.submissionKey('one','hello',[]);
+ const second=setup();second.context.sessionStorage=sessionStorage;
+ assert.equal(second.context.submissionKey('one','hello',[]),key);
+ second.context.clearSubmission('one');assert.equal(storage.size,0);
+});
+
+test('live model snapshot replaces on replay and final message removes provisional text',()=>{
+ const {nodes,context,fixture}=setup();fixture.cards=[];fixture.status='running';fixture.runs=[{id:'run-one',status:'running'}];
+ fixture.live_text={task_id:'one',run_id:'run-one',request_id:10,revision:11,text:'<img src=x> Hello',truncated:false};
+ context.paint(fixture);context.paint(fixture);
+ let live=nodes.get('conversation').children.filter(n=>n.className==='message live-text');assert.equal(live.length,1);assert.equal(live[0].children[1].textContent,'<img src=x> Hello');assert.equal(live[0].children[1].children.length,0);
+ fixture.live_text={...fixture.live_text,revision:12,text:'<img src=x> Hello world'};context.paint(fixture);live=nodes.get('conversation').children.filter(n=>n.className==='message live-text');assert.equal(live.length,1);assert.equal(live[0].children[1].textContent,'<img src=x> Hello world');
+ fixture.status='completed';fixture.runs[0].status='completed';fixture.messages=[{role:'assistant',content:'Final answer'}];delete fixture.live_text;context.paint(fixture);assert.equal(nodes.get('conversation').children.filter(n=>n.className==='message live-text').length,0);
+});
+test('live snapshot rejects cross-task/run data and bounds displayed content',()=>{
+ const {nodes,context,fixture}=setup();fixture.cards=[];fixture.status='running';fixture.runs=[{id:'run-one',status:'running'}];
+ fixture.live_text={task_id:'other-task',run_id:'run-one',request_id:10,revision:11,text:'Private other task',truncated:false};context.paint(fixture);assert.equal(nodes.get('conversation').children.length,0);
+ fixture.live_text.task_id='one';fixture.live_text.run_id='other-run';context.paint(fixture);assert.equal(nodes.get('conversation').children.length,0);
+ fixture.live_text.run_id='run-one';fixture.live_text.text='x'.repeat(100000);context.paint(fixture);const node=nodes.get('conversation').children[0];assert.equal(node.children[1].textContent.length,65536);assert.match(node.children.at(-1).textContent,/limit reached/);
 });

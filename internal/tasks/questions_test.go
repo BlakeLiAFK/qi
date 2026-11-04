@@ -119,7 +119,7 @@ func TestQuestionSingleUseIsolationAndRestart(t *testing.T) {
 
 func TestQuestionTextValidationExpiryAndToolScope(t *testing.T) {
 	ctx := context.Background()
-	e, _, task, run := questionFixture(t)
+	e, store, task, run := questionFixture(t)
 	q := questionTool{engine: e, taskID: task.ID, runID: run.ID}
 	for _, raw := range []string{`null`, `{"id":"q","title":"Question","input_type":"text","task_id":"other"}`, `{"id":"q","title":"Question","input_type":"choice","choices":[{"id":"a","label":"A"},{"id":"a","label":"B"}]}`} {
 		if _, err := q.Execute(ctx, json.RawMessage(raw)); err == nil {
@@ -141,11 +141,33 @@ func TestQuestionTextValidationExpiryAndToolScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	exp := choiceCard("expired")
-	exp.ExpiresAt = time.Now().Add(20 * time.Millisecond)
+	exp.ExpiresAt = time.Now().Add(time.Hour)
 	if err := e.AddCard(ctx, task.ID, run.ID, exp); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(25 * time.Millisecond)
+	// Expire the persisted card deterministically, rather than racing a short
+	// wall-clock deadline against SQLite writes on a busy test machine.
+	snapshot, err := e.Get(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expired Card
+	for _, card := range snapshot.Cards {
+		if card.ID == exp.ID {
+			expired = card
+		}
+	}
+	if expired.ID == "" {
+		t.Fatal("created card missing")
+	}
+	expired.ExpiresAt = time.Now().Add(-time.Hour)
+	payload, err := json.Marshal(expired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendEvent(ctx, task.ID, run.ID, "card", payload); err != nil {
+		t.Fatal(err)
+	}
 	if err := e.Act(ctx, task.ID, ActionRequest{TaskID: task.ID, CardID: "expired", Revision: 1, Action: "answer", ChoiceID: "doc"}); !errors.Is(err, ErrStaleCard) {
 		t.Fatal("expired accepted", err)
 	}

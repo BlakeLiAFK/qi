@@ -70,7 +70,12 @@ actual peer address, never forwarded client-IP headers; reverse-proxy users shar
 that bucket. Configure additional rate limiting at the proxy edge.
 
 `qi serve -h` lists server options. Ctrl-C or SIGTERM shuts down the server and
-cancels active and queued runs. The UI polls state; it does not stream model tokens.
+cancels active and queued runs. The UI uses SSE progress notifications and snapshot
+polling. Opt in with `qi serve -model-stream` for provisional model text updates;
+this remains off by default. Live previews are bounded, task/run scoped, and may
+pause at size or event limits. A completed message replaces its preview. Partial
+tool arguments are never rendered or executed. Interrupted preview text is not
+a completed answer and is not replayed into model history.
 
 ## Task question cards
 
@@ -106,11 +111,17 @@ under `<artifact-dir>/<task-id>/<relative-path>`. The directory and all opened
 path components must not be symlinks. Only regular files up to 32 MiB are allowed;
 dotfile segments, absolute paths, traversal, and backslash paths are rejected.
 
-Registration is currently an authenticated API operation:
+Explicit registration is available through the authenticated API:
 `POST /api/tasks/<task-id>/artifacts` with JSON `{"path":"report.pdf"}`.
 It registers metadata and a content hash for an existing task-scoped file, not an
-upload or a new file creation. There is no model auto-registration or WebUI upload
-flow in this slice. The WebUI lists registered deliverables and offers downloads.
+upload or a new file creation. Enabling this root also exposes the task-scoped
+`artifact_publish` model tool. It requests an exact user approval showing the
+relative filename, size, content hash, and task-only destination before registering.
+The bytes are rechecked after approval; changed files fail closed. Rejection,
+cancellation, expiry, and restart never publish automatically. A successful tool
+result means registered for download, not downloaded or externally delivered.
+There is no automatic workspace scanning, worker-output import, or WebUI upload.
+The WebUI lists registered deliverables and offers downloads.
 `GET /api/tasks/<task-id>/artifacts` lists metadata, and app-provided download links
 point to authenticated artifact IDs, never raw filesystem paths.
 

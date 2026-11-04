@@ -44,6 +44,9 @@ type ApprovalBackend interface {
 	Approvals(context.Context, string) ([]tasks.Approval, error)
 	DecideApproval(context.Context, string, tasks.ApprovalDecision) (tasks.Approval, error)
 }
+type SubmissionBackend interface {
+	Submit(context.Context, string, string, string, []string) (tasks.Run, error)
+}
 type SkillsBackend interface {
 	AvailableSkills() []skills.Metadata
 	StartWithSkills(context.Context, string, string, []string) error
@@ -316,6 +319,7 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Prompt string   `json:"prompt"`
 			Skills []string `json:"skills,omitempty"`
+			Key    string   `json:"idempotency_key,omitempty"`
 		}
 		if decode(w, r, &req) != nil || strings.TrimSpace(req.Prompt) == "" || len(req.Prompt) > 16000 {
 			http.Error(w, "invalid prompt (maximum 16000 bytes)", 400)
@@ -332,6 +336,27 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			seen[name] = true
+		}
+		if req.Key != "" {
+			if len(req.Key) > 128 || strings.IndexFunc(req.Key, func(c rune) bool { return c < 33 || c > 126 }) >= 0 {
+				http.Error(w, "invalid idempotency key", 400)
+				return
+			}
+			backend, ok := s.cfg.Backend.(SubmissionBackend)
+			if !ok {
+				http.Error(w, "idempotent submission unavailable", 503)
+				return
+			}
+			run, submitErr := backend.Submit(r.Context(), id, req.Key, req.Prompt, req.Skills)
+			if submitErr != nil {
+				http.Error(w, "submission rejected: key, task state, or capacity conflict", 409)
+				return
+			}
+			respond(w, struct {
+				Accepted bool      `json:"accepted"`
+				Run      tasks.Run `json:"run"`
+			}{true, run})
+			return
 		}
 		if len(req.Skills) == 0 {
 			err = s.cfg.Backend.Start(r.Context(), id, req.Prompt)

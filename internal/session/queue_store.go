@@ -64,6 +64,9 @@ func (s *Store) EnsureQueueSchema(ctx context.Context) (resultErr error) {
 			}
 		}
 	}
+	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS admission_keys (session_id TEXT NOT NULL, principal TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, accepted_run TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(session_id,principal,key), FOREIGN KEY(run_id,session_id) REFERENCES runs(id,session_id))`); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
 	if err != nil {
 		return err
@@ -89,7 +92,15 @@ func (s *Store) EnsureQueueSchema(ctx context.Context) (resultErr error) {
 
 // AcceptQueued durably accepts a prompt and optionally consumes a question card
 // in one transaction. The caller serializes card validation under engine.mu.
-func (s *Store) AcceptQueued(ctx context.Context, id string, revision int64, history []agent.Message, sourceRun string, card json.RawMessage, maxQueued int) (Run, error) {
+func (s *Store) AcceptQueued(ctx context.Context, id string, revision int64, history []agent.Message, sourceRun string, card json.RawMessage, maxQueued int, identities ...AdmissionIdentity) (Run, error) {
+	if len(identities) > 1 {
+		return Run{}, errors.New("only one admission identity allowed")
+	}
+	if len(identities) == 1 {
+		if err := identities[0].Validate(); err != nil {
+			return Run{}, err
+		}
+	}
 	if revision < 0 {
 		return Run{}, ErrConflict
 	}
@@ -115,6 +126,18 @@ func (s *Store) AcceptQueued(ctx context.Context, id string, revision int64, his
 		return Run{}, err
 	}
 	defer tx.Rollback()
+	if len(identities) == 1 {
+		if prior, found, err := lookupAdmission(ctx, tx, id, identities[0]); err != nil || found {
+			return prior, err
+		}
+		var keys int
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM admission_keys WHERE session_id=?`, id).Scan(&keys); err != nil {
+			return Run{}, err
+		}
+		if keys >= MaxAdmissionKeysPerTask {
+			return Run{}, ErrIdempotencyCapacity
+		}
+	}
 	var count int
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE status='queued'`).Scan(&count); err != nil {
 		return Run{}, err
@@ -167,6 +190,16 @@ func (s *Store) AcceptQueued(ctx context.Context, id string, revision int64, his
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO dispatch_records(run_id,session_id,revision) VALUES(?,?,?)`, run.ID, id, revision+1); err != nil {
 		return Run{}, err
+	}
+	if len(identities) == 1 {
+		identity := identities[0]
+		payload, err := json.Marshal(run)
+		if err != nil {
+			return Run{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO admission_keys(session_id,principal,key,digest,accepted_run,run_id) VALUES(?,?,?,?,?,?)`, id, identity.Principal, identity.Key, identity.Digest, string(payload), run.ID); err != nil {
+			return Run{}, err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return Run{}, err

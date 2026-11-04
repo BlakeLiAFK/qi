@@ -16,7 +16,8 @@ type TaskSnapshot struct {
 	Session  Session
 	Messages []agent.Message
 	Runs     []Run
-	Events   []Event
+	// Events is a UI projection, not the audit log. Use Store.Events for replay.
+	Events []Event
 }
 
 type snapshotReader interface {
@@ -101,7 +102,7 @@ func readTaskSnapshot(ctx context.Context, q snapshotReader, id string) (TaskSna
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
-	rows, err = q.QueryContext(ctx, `SELECT id,session_id,run_id,type,payload,created_at FROM events WHERE session_id=? ORDER BY id`, id)
+	rows, err = q.QueryContext(ctx, snapshotEventsQuery, sql.Named("task", id))
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
@@ -128,3 +129,25 @@ func readTaskSnapshot(ctx context.Context, q snapshotReader, id string) (TaskSna
 	}
 	return result, nil
 }
+
+// Old preview payloads are never loaded by polling. The current request is
+// selected through indexed metadata lookups in the same read transaction as
+// history and run status. A closing event suppresses it even if status is still
+// running. A malformed producer exceeding 256 deltas fails closed.
+const snapshotEventsQuery = `WITH
+ active_run AS (SELECT id FROM runs WHERE session_id=:task AND status='running'),
+ request_start AS (SELECT id,run_id FROM events WHERE session_id=:task
+   AND run_id=(SELECT id FROM active_run) AND type='model_start' ORDER BY id DESC LIMIT 1),
+ open_request AS (SELECT id,run_id FROM request_start s WHERE NOT EXISTS (
+   SELECT 1 FROM events WHERE session_id=:task AND run_id=s.run_id
+   AND type IN ('message','error','run_end') AND id>s.id)),
+ delta_ids AS (SELECT id FROM events WHERE session_id=:task AND type='model_delta'
+   AND run_id=(SELECT run_id FROM open_request) AND id>(SELECT id FROM open_request)
+   ORDER BY id LIMIT 257),
+ selected_ids AS (
+   SELECT id FROM events WHERE session_id=:task AND type IN ('card','context_trim')
+   UNION ALL SELECT id FROM open_request WHERE (SELECT COUNT(*) FROM delta_ids)<=256
+   UNION ALL SELECT id FROM delta_ids WHERE (SELECT COUNT(*) FROM delta_ids)<=256
+ )
+ SELECT id,session_id,run_id,type,payload,created_at FROM events
+ WHERE id IN (SELECT id FROM selected_ids) ORDER BY id`

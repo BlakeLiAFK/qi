@@ -258,3 +258,52 @@ func TestConcurrentRegistryLastSlotIsAtomic(t *testing.T) {
 		t.Fatal("quota race", successes)
 	}
 }
+
+func TestVerifiedRegistrationBindsSnapshot(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	task, err := store.Create(ctx, "snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	dir := filepath.Join(root, task.ID)
+	if err = os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one.txt", "two.txt"} {
+		if err = os.WriteFile(filepath.Join(dir, name), []byte("same bytes"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc, err := artifacts.New(root, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := svc.Inspect(ctx, task.ID, "one.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := svc.List(ctx, task.ID)
+	if err != nil || len(items) != 0 {
+		t.Fatal("inspection published", items, err)
+	}
+	if _, err = svc.RegisterVerified(ctx, task.ID, "two.txt", snapshot); !errors.Is(err, artifacts.ErrUnavailable) {
+		t.Fatal("wrong path accepted", err)
+	}
+	foreign := snapshot
+	foreign.TaskID = "other"
+	if _, err = svc.RegisterVerified(ctx, task.ID, "one.txt", foreign); !errors.Is(err, artifacts.ErrUnavailable) {
+		t.Fatal("wrong task accepted", err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "one.txt"), []byte("new bytes!"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.RegisterVerified(ctx, task.ID, "one.txt", snapshot); !errors.Is(err, artifacts.ErrUnavailable) {
+		t.Fatal("wrong hash accepted", err)
+	}
+}

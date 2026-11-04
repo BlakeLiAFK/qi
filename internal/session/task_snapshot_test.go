@@ -75,7 +75,7 @@ func TestTaskSnapshotCompletionBetweenHistoryAndStatus(t *testing.T) {
 				if err := writer.Save(ctx, task.ID, final); err != nil {
 					return err
 				}
-				if _, err := writer.AppendEvent(ctx, task.ID, run.ID, "message", []byte(`{"message":{"role":"assistant","content":"final answer"}}`)); err != nil {
+				if _, err := writer.AppendEvent(ctx, task.ID, run.ID, "card", []byte(`{"message":{"role":"assistant","content":"final answer"}}`)); err != nil {
 					return err
 				}
 				return writer.FinishRun(ctx, run.ID, "completed", "")

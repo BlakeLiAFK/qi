@@ -19,7 +19,7 @@ function error(e){$('error').textContent=e.message||String(e);$('error').hidden=
 async function api(path,body){const response=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json','X-Qi-Request':'1'},body:body===undefined?undefined:JSON.stringify(body)});if(!response.ok)throw new Error((await response.text()).trim()||'Request failed');return response.json();}
 function element(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function active(status){return ['running','queued','waiting_for_approval','waiting_for_input'].includes(status);}
-function paint(task){const signature=JSON.stringify(task)+JSON.stringify((task.approvals||[]).map(a=>Date.parse(a.expires_at)<=Date.now()))+JSON.stringify((task.cards||[]).map(c=>Date.parse(c.expires_at)<=Date.now()));$('send').disabled=busy||active(task.status);if(version===signature)return;version=signature;$('task-title').textContent=task.title;$('status').textContent=task.status;$('cancel').hidden=!active(task.status);$('send').disabled=busy||active(task.status);const panel=$('conversation');const nearBottom=panel.scrollHeight-panel.scrollTop-panel.clientHeight<100;panel.replaceChildren();paintContextNotice(task,panel);for(const msg of task.messages||[]){if(!['user','assistant','tool'].includes(msg.role))continue;const block=element('div',undefined,'message '+msg.role);block.append(element('small',msg.role==='assistant'?'QI':msg.role.toUpperCase()),element('div',msg.content||''));panel.append(block);}for(const run of task.runs||[]){if(run.error){const notice=element('section',undefined,'card');notice.append(element('h3','Run '+run.status),element('p',run.error));panel.append(notice);}}for(const card of task.cards||[]){if(card.kind==='question'){paintQuestion(task,card,panel);continue;}const block=element('section',undefined,'card');block.append(element('h3',card.title),element('p',card.summary),element('small',card.state));for(const action of card.actions||[]){const button=element('button',action.label);button.disabled=card.state!=='pending';button.onclick=async()=>{button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/actions',{card_id:card.id,action:action.id,revision:card.revision});await refresh();}catch(e){error(e);await refresh();}};block.append(button);}panel.append(block);}paintApprovals(task,panel);paintArtifacts(task,panel);if(nearBottom)panel.scrollTop=panel.scrollHeight;}
+function paint(task){const signature=JSON.stringify(task)+JSON.stringify((task.approvals||[]).map(a=>Date.parse(a.expires_at)<=Date.now()))+JSON.stringify((task.cards||[]).map(c=>Date.parse(c.expires_at)<=Date.now()));$('send').disabled=busy||active(task.status);if(version===signature)return;version=signature;$('task-title').textContent=task.title;$('status').textContent=task.status;$('cancel').hidden=!active(task.status);$('send').disabled=busy||active(task.status);const panel=$('conversation');const nearBottom=panel.scrollHeight-panel.scrollTop-panel.clientHeight<100;panel.replaceChildren();paintContextNotice(task,panel);for(const msg of task.messages||[]){if(!['user','assistant','tool'].includes(msg.role))continue;const block=element('div',undefined,'message '+msg.role);block.append(element('small',msg.role==='assistant'?'QI':msg.role.toUpperCase()),element('div',msg.content||''));panel.append(block);}paintLiveText(task,panel);for(const run of task.runs||[]){if(run.error){const notice=element('section',undefined,'card');notice.append(element('h3','Run '+run.status),element('p',run.error));panel.append(notice);}}for(const card of task.cards||[]){if(card.kind==='question'){paintQuestion(task,card,panel);continue;}const block=element('section',undefined,'card');block.append(element('h3',card.title),element('p',card.summary),element('small',card.state));for(const action of card.actions||[]){const button=element('button',action.label);button.disabled=card.state!=='pending';button.onclick=async()=>{button.disabled=true;try{await api('/api/tasks/'+encodeURIComponent(task.id)+'/actions',{card_id:card.id,action:action.id,revision:card.revision});await refresh();}catch(e){error(e);await refresh();}};block.append(button);}panel.append(block);}paintApprovals(task,panel);paintArtifacts(task,panel);if(nearBottom)panel.scrollTop=panel.scrollHeight;}
 async function refresh(){if(refreshRunning){refreshAgain=true;return;}refreshRunning=true;watchTask(selected);try{const tasks=await api('/api/tasks');const nav=$('tasks');nav.replaceChildren();for(const task of tasks){const button=element('button',task.title,task.id===selected?'active':'');button.append(element('small',task.status));button.onclick=()=>{if(busy)return;selectTask(task);refresh();};nav.append(button);}if(selected){const id=selected;const task=await api('/api/tasks/'+encodeURIComponent(id));task.approvals=await api('/api/tasks/'+encodeURIComponent(id)+'/approvals');task.artifacts=await api('/api/tasks/'+encodeURIComponent(id)+'/artifacts');if(selected===id)paint(task);}}catch(e){error(e);}finally{refreshRunning=false;if(refreshAgain){refreshAgain=false;refresh();}}}
 function selectTask(task){
  const nextID=task?task.id:null;
@@ -38,6 +38,19 @@ $('new-task').onclick=()=>{
  if(busy)return;
  selectTask(null);$('prompt').focus();refresh();
 };
+// Keep a key until acceptance is observed. An uncertain network failure must
+// not turn a retry into a new run. Session storage also survives page reloads.
+const pendingSubmissions=new Map();
+function submissionKey(id,prompt,names){
+ const signature=JSON.stringify({prompt,skills:names}),storageKey='qi-submission:'+id;
+ let prior=pendingSubmissions.get(id);
+ try{if(!prior)prior=JSON.parse(sessionStorage.getItem(storageKey));}catch(_){}
+ if(!prior||prior.signature!==signature){prior={signature,key:crypto.randomUUID()};}
+ pendingSubmissions.set(id,prior);
+ try{sessionStorage.setItem(storageKey,JSON.stringify(prior));}catch(_){}
+ return prior.key;
+}
+function clearSubmission(id){pendingSubmissions.delete(id);try{sessionStorage.removeItem('qi-submission:'+id);}catch(_){}}
 $('composer').onsubmit=async event=>{
  event.preventDefault();if(busy)return;
  const draft=$('prompt').value,prompt=draft.trim();if(!prompt)return;
@@ -50,7 +63,8 @@ $('composer').onsubmit=async event=>{
   }
   const id=selected;
   taskDrafts.set(id,draft);
-  await api('/api/tasks/'+encodeURIComponent(id)+'/messages',{prompt,skills:names});
+  await api('/api/tasks/'+encodeURIComponent(id)+'/messages',{prompt,skills:names,idempotency_key:submissionKey(id,prompt,names)});
+  clearSubmission(id);
   taskDrafts.delete(id);$('prompt').value='';clearSkills();version='';
  }catch(e){error(e);}
  finally{busy=false;$('prompt').readOnly=false;$('skills').disabled=false;await refresh();}
@@ -142,4 +156,14 @@ function paintArtifacts(task,panel){
   block.append(element('small','DELIVERABLE'),element('h3',artifact.name),element('p',artifact.media_type+' · '+artifact.size+' bytes'),element('small','SHA-256: '+artifact.sha256));
   const link=element('a','Download file');link.href='/api/tasks/'+encodeURIComponent(task.id)+'/artifacts/'+encodeURIComponent(artifact.id);link.download=artifact.name;block.append(link);panel.append(block);
  }
+}
+
+function paintLiveText(task,panel){
+ const live=task.live_text;
+ if(!live||task.status!=='running'||live.task_id!==task.id||typeof live.text!=='string'||!Number.isSafeInteger(live.revision)||!Number.isSafeInteger(live.request_id))return;
+ if(!(task.runs||[]).some(run=>run.id===live.run_id&&run.status==='running'))return;
+ const block=element('section',undefined,'message live-text');
+ block.append(element('small','QI · PROVISIONAL TEXT'),element('div',live.text.slice(0,65536)),element('small','Still generating. This is not a completed answer or a tool result. Live previews may pause at size or event limits.'));
+ if(live.truncated||live.text.length>65536)block.append(element('small','Live preview limit reached. The completed message will replace this preview.'));
+ panel.append(block);
 }

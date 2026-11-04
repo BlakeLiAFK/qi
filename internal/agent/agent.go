@@ -36,7 +36,7 @@ type Model interface {
 	Complete(context.Context, []Message, []ToolDefinition) (Message, error)
 }
 
-// EventModel optionally reports model-input diagnostics through the same ordered
+// EventModel optionally reports model-input diagnostics and provisional text progress through the same ordered
 // event stream as the agent. Implementations must not include prompt contents in
 // diagnostic events or retain the callback after CompleteWithEvents returns.
 type EventModel interface {
@@ -45,9 +45,11 @@ type EventModel interface {
 }
 
 // Event callbacks are synchronous and ordered. A callback must not modify the
-// pointed-to values. Events represent whole messages, not token deltas.
+// pointed-to values. Only message events represent whole messages. model_delta text is provisional
+// and must never be added to history or interpreted as tool arguments.
 type Event struct {
 	Type            string    `json:"type"`
+	Delta           string    `json:"delta,omitempty"`
 	Message         *Message  `json:"message,omitempty"`
 	ToolCall        *ToolCall `json:"tool_call,omitempty"`
 	Error           string    `json:"error,omitempty"`

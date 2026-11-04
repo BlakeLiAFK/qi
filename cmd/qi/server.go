@@ -33,6 +33,7 @@ type daemonConfig struct {
 	skills                                          *skills.Catalog
 	artifactDir                                     string
 	questions                                       bool
+	modelStream                                     bool
 }
 
 // openDaemon owns one database and one engine. Coding tools require explicit
@@ -54,8 +55,8 @@ func openDaemon(ctx context.Context, c daemonConfig) (http.Handler, func(), erro
 			return nil, nil, err
 		}
 	}
-	engine, err := tasks.New(ctx, store, tasks.Config{MaxConcurrent: c.maxConcurrent, MaxQueued: c.maxQueued, Coding: c.coding, MCP: c.mcp, Skills: c.skills, Questions: c.questions, Factory: func(_ string) (*agent.Agent, error) {
-		return &agent.Agent{Model: &contextbudget.Model{Next: &provider.OpenAI{Model: c.model, BaseURL: c.baseURL, APIKey: c.apiKey}, Config: contextbudget.Config{MaxInputBytes: c.contextBytes}}, MaxSteps: c.maxSteps}, nil
+	engine, err := tasks.New(ctx, store, tasks.Config{Artifacts: deliverables, MaxConcurrent: c.maxConcurrent, MaxQueued: c.maxQueued, Coding: c.coding, MCP: c.mcp, Skills: c.skills, Questions: c.questions, Factory: func(_ string) (*agent.Agent, error) {
+		return &agent.Agent{Model: &contextbudget.Model{Next: &provider.OpenAI{Model: c.model, BaseURL: c.baseURL, APIKey: c.apiKey, Stream: c.modelStream}, Config: contextbudget.Config{MaxInputBytes: c.contextBytes}}, MaxSteps: c.maxSteps}, nil
 	}})
 	if err != nil {
 		_ = store.Close()
@@ -91,6 +92,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 	}
 	listen := fs.String("listen", "127.0.0.1:8686", "literal loopback listening address")
 	origin := fs.String("origin", "", "exact browser origin, no trailing slash (default http://listen address)")
+	modelStream := fs.Bool("model-stream", false, "opt in to provisional model text updates; tool arguments remain buffered")
 	questions := fs.Bool("question-cards", false, "enable task-local question cards; answers grant no permission and do not resume runs")
 	artifactDir := fs.String("artifact-dir", "", "explicit existing deliverable root; task-scoped files only; disabled by default")
 	db := fs.String("db", "", "SQLite path (default user config directory/qi/tasks.db)")
@@ -181,7 +183,7 @@ func runServer(ctx context.Context, args []string, out io.Writer, env func(strin
 		}
 		*db = filepath.Join(dir, "tasks.db")
 	}
-	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, maxConcurrent: *maxConcurrent, maxQueued: *maxQueued, coding: coding, mcp: mcp, contextBytes: contextBytes, skills: catalog, artifactDir: *artifactDir, questions: *questions})
+	handler, closeAll, err := openDaemon(ctx, daemonConfig{database: *db, model: *model, baseURL: *base, apiKey: env("OPENAI_API_KEY"), origin: *origin, token: token, maxSteps: *max, maxConcurrent: *maxConcurrent, maxQueued: *maxQueued, coding: coding, mcp: mcp, contextBytes: contextBytes, skills: catalog, artifactDir: *artifactDir, questions: *questions, modelStream: *modelStream})
 	if err != nil {
 		return err
 	}

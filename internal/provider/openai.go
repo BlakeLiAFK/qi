@@ -26,6 +26,8 @@ type OpenAI struct {
 	APIKey  string
 	Model   string
 	Client  *http.Client
+	// Stream opts into SSE transport. Text progress is provisional until Complete returns.
+	Stream bool
 }
 
 type function struct {
@@ -68,6 +70,14 @@ func validateEndpoint(raw string) error {
 }
 
 func (p *OpenAI) Complete(ctx context.Context, messages []agent.Message, definitions []agent.ToolDefinition) (agent.Message, error) {
+	return p.CompleteWithEvents(ctx, messages, definitions, nil)
+}
+
+// CompleteWithEvents reports ordered, text-only progress when streaming is enabled.
+// The callback is request-local and is never retained or called concurrently.
+// Preview is limited to 64 KiB and 256 events per model request; final output is
+// unaffected by preview limits. Agent MaxSteps bounds the number of requests.
+func (p *OpenAI) CompleteWithEvents(ctx context.Context, messages []agent.Message, definitions []agent.ToolDefinition, emit func(agent.Event)) (agent.Message, error) {
 	var zero agent.Message
 	if p.Model == "" {
 		return zero, errors.New("model name is required")
@@ -88,7 +98,8 @@ func (p *OpenAI) Complete(ctx context.Context, messages []agent.Message, definit
 		Model    string    `json:"model"`
 		Messages []message `json:"messages"`
 		Tools    []tool    `json:"tools,omitempty"`
-	}{p.Model, wire, ts})
+		Stream   bool      `json:"stream,omitempty"`
+	}{p.Model, wire, ts, p.Stream})
 	if err != nil {
 		return zero, err
 	}
@@ -104,6 +115,9 @@ func (p *OpenAI) Complete(ctx context.Context, messages []agent.Message, definit
 		return zero, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if p.Stream {
+		req.Header.Set("Accept", "text/event-stream")
+	}
 	if p.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+p.APIKey)
 	}
@@ -120,6 +134,13 @@ func (p *OpenAI) Complete(ctx context.Context, messages []agent.Message, definit
 		return zero, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Never expose provider response bodies, which may contain private data.
+		return zero, fmt.Errorf("model HTTP %d (%s)", resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+	if p.Stream {
+		return readStream(ctx, resp, emit)
+	}
 	const maxBody = 8 << 20
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
@@ -127,10 +148,6 @@ func (p *OpenAI) Complete(ctx context.Context, messages []agent.Message, definit
 	}
 	if len(raw) > maxBody {
 		return zero, errors.New("model response exceeds 8 MiB")
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Do not echo provider response bodies, which can contain user prompts or secrets.
-		return zero, fmt.Errorf("model HTTP %d (%s)", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 	var result struct {
 		Choices []struct {

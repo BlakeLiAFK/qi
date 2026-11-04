@@ -109,7 +109,13 @@ func (s *Service) read(task, p string) ([]byte, error) {
 	}
 	return b, nil
 }
-func (s *Service) Register(ctx context.Context, task, p string) (Artifact, error) {
+
+// Inspect verifies a staged file without publishing it. The returned metadata has
+// no registration ID; it is suitable for binding an exact approval.
+func (s *Service) Inspect(ctx context.Context, task, p string) (Artifact, error) {
+	if err := ctx.Err(); err != nil {
+		return Artifact{}, err
+	}
 	release, err := AcquireRead()
 	if err != nil {
 		return Artifact{}, err
@@ -119,12 +125,31 @@ func (s *Service) Register(ctx context.Context, task, p string) (Artifact, error
 	if err != nil {
 		return Artifact{}, err
 	}
+	hash := sha256.Sum256(b)
+	return Artifact{TaskID: task, Name: path.Base(p), Path: p, Size: int64(len(b)), MediaType: http.DetectContentType(b), SHA256: hex.EncodeToString(hash[:])}, nil
+}
+func (s *Service) Register(ctx context.Context, task, p string) (Artifact, error) {
+	return s.register(ctx, task, p, nil)
+}
+
+// RegisterVerified only publishes the bytes approved by the user. Downloads
+// independently verify the same hash, including changes after registration.
+func (s *Service) RegisterVerified(ctx context.Context, task, p string, expected Artifact) (Artifact, error) {
+	return s.register(ctx, task, p, &expected)
+}
+func (s *Service) register(ctx context.Context, task, p string, expected *Artifact) (Artifact, error) {
+	a, err := s.Inspect(ctx, task, p)
+	if err != nil {
+		return Artifact{}, err
+	}
+	if expected != nil && (expected.TaskID != task || expected.Path != p || expected.Size != a.Size || expected.SHA256 != a.SHA256) {
+		return Artifact{}, ErrUnavailable
+	}
 	var id [16]byte
 	if _, err = rand.Read(id[:]); err != nil {
 		return Artifact{}, err
 	}
-	hash := sha256.Sum256(b)
-	a := Artifact{ID: hex.EncodeToString(id[:]), TaskID: task, Name: path.Base(p), Path: p, Size: int64(len(b)), MediaType: http.DetectContentType(b), SHA256: hex.EncodeToString(hash[:]), CreatedAt: time.Now().UTC()}
+	a.ID, a.CreatedAt = hex.EncodeToString(id[:]), time.Now().UTC()
 	return s.registry.SaveArtifact(ctx, a)
 }
 func (s *Service) List(ctx context.Context, task string) ([]Artifact, error) {
